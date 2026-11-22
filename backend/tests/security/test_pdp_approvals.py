@@ -2,7 +2,7 @@ import pytest
 
 from app.policy import PolicyEngine, PolicyStore, DEFAULT_RULES, validate_role
 from app.security.errors import HarnessError
-from conftest import ORG, PROJ, subject
+from backend.tests.security.conftest import ORG, PROJ, subject
 
 
 def code(fn):
@@ -75,7 +75,7 @@ def test_risk_levels_and_slots():
 
 def test_response_matches_contract_shape():
     import jsonschema
-    from conftest import schema
+    from backend.tests.security.conftest import schema
 
     s = schema("pdp_contract.json")
     resp = PolicyEngine().evaluate(_req(subject("op", ["execution.commit"]), "execution.commit"))

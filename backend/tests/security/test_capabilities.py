@@ -13,7 +13,7 @@ from app.capabilities.signing import (
     KeyRing, LocalEd25519Signer, VaultTransitEd25519Signer, b64u_decode, b64u_encode, vault_signature_to_b64url,
 )
 from app.security.errors import HarnessError
-from conftest import Clock, H, ORG, PROJ, schema
+from backend.tests.security.conftest import Clock, H, ORG, PROJ, schema
 
 PREP = "33333333-3333-3333-3333-333333333333"
 

@@ -6,7 +6,7 @@ import pytest
 
 from app.broker import ToolBroker
 from app.security.errors import HarnessError
-from conftest import H, ORG, PROJ, World, schema
+from backend.tests.security.conftest import H, ORG, PROJ, World, schema
 
 
 def code(fn):

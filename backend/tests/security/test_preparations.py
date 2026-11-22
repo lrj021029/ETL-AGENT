@@ -4,7 +4,7 @@ import pytest
 
 from app.preparations import classify_change, fingerprint
 from app.security.errors import HarnessError
-from conftest import H, ORG, PROJ
+from backend.tests.security.conftest import H, ORG, PROJ
 
 
 def code(fn):
