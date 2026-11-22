@@ -1,0 +1,69 @@
+{
+  "uid": "etl-seatunnel-data-plane",
+  "title": "ETL-Agent / 3. SeaTunnel Data Plane",
+  "description": "SeaTunnel Zeta 读写行数、写入字节数、吞吐量与 CDC 延迟监控",
+  "tags": ["etl-agent", "seatunnel", "cdc", "data-plane"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "15s",
+  "time": { "from": "now-1h", "to": "now" },
+  "panels": [
+    {
+      "id": 1,
+      "type": "timeseries",
+      "title": "Read Rows / sec by Source Connector",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (execution_mode, connector_source) (rate(etl_execution_read_rows_total[1m]))",
+          "legendFormat": "{{execution_mode}} - {{connector_source}}"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "Write Rows / sec by Sink Connector",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (execution_mode, connector_sink) (rate(etl_execution_write_rows_total[1m]))",
+          "legendFormat": "{{execution_mode}} - {{connector_sink}}"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "Write Bytes / sec by Sink Connector",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (execution_mode, connector_sink) (rate(etl_execution_write_bytes_total[1m]))",
+          "legendFormat": "{{execution_mode}} - {{connector_sink}}"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "CDC Replication Lag (ms)",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "etl_cdc_lag_milliseconds",
+          "legendFormat": "{{connector_source}} ({{execution_id}})"
+        }
+      ]
+    }
+  ]
+}

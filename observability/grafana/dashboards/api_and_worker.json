@@ -1,0 +1,73 @@
+{
+  "uid": "etl-api-worker",
+  "title": "ETL-Agent / 2. API & Worker",
+  "description": "FastAPI 控制面、Outbox 投递与 Celery Worker 执行耗时及调度监控",
+  "tags": ["etl-agent", "api", "worker", "outbox"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "15s",
+  "time": { "from": "now-1h", "to": "now" },
+  "panels": [
+    {
+      "id": 1,
+      "type": "timeseries",
+      "title": "Execution Duration Distribution (P50 / P95)",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.50, sum by (le, execution_mode) (rate(etl_execution_duration_seconds_bucket[5m])))",
+          "legendFormat": "P50 {{execution_mode}}"
+        },
+        {
+          "refId": "B",
+          "expr": "histogram_quantile(0.95, sum by (le, execution_mode) (rate(etl_execution_duration_seconds_bucket[5m])))",
+          "legendFormat": "P95 {{execution_mode}}"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "Outbox Pending Events",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "etl_outbox_pending_events",
+          "legendFormat": "Outbox Pending"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "Execution Runs Completed by Status",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (execution_mode, status) (increase(etl_execution_duration_seconds_count[15m]))",
+          "legendFormat": "{{execution_mode}} / {{status}}"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "logs",
+      "title": "Recent Worker & API Logs (Loki)",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+      "datasource": { "type": "loki", "uid": "loki" },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "{service_name=~\"etl-agent-api|etl-agent-worker\"}"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,52 @@
+# Grafana Loki 单机配置（适配 grafana/loki:3.3.2）
+# 用于存储 FastAPI、Celery Worker 与 SeaTunnelAdapter 脱敏后的结构化 JSON 日志
+
+auth_enabled: false
+
+server:
+  http_listen_port: 3100
+  grpc_listen_port: 9096
+  log_level: warn
+
+common:
+  instance_addr: 127.0.0.1
+  path_prefix: /loki
+  storage:
+    filesystem:
+      chunks_directory: /loki/chunks
+      rules_directory: /loki/rules
+  replication_factor: 1
+  ring:
+    kvstore:
+      store: inmemory
+
+query_range:
+  results_cache:
+    cache:
+      embedded_cache:
+        enabled: true
+        max_size_mb: 64
+
+schema_config:
+  configs:
+    - from: 2024-01-01
+      store: tsdb
+      object_store: filesystem
+      schema: v13
+      index:
+        prefix: index_
+        period: 24h
+
+limits_config:
+  # 启用结构化元数据以支持 trace_id / execution_id 等关联字段查询
+  allow_structured_metadata: true
+  # 本地日志留存期（可按 PRD-TBD-06/10 策略配置调整，默认 168h = 7 天）
+  retention_period: 168h
+  ingestion_rate_mb: 16
+  ingestion_burst_size_mb: 32
+
+compactor:
+  working_directory: /loki/compactor
+  compaction_interval: 10m
+  retention_enabled: true
+  delete_request_store: filesystem

@@ -1,0 +1,54 @@
+{
+  "suite_version": "1.0.0",
+  "description": "L1 故障模拟测试集：覆盖数据库断连、Worker 崩溃、重复投递、Zeta 提交响应丢失、拒绝率超限与 Schema Drift",
+  "cases": [
+    {
+      "case_id": "L1-FLT-001",
+      "fault_type": "db_disconnect",
+      "description": "源库连接在探查或执行期间中断，验证可控失败与可恢复状态",
+      "simulation_params": { "target": "source_mysql", "disconnect_after_ms": 500 },
+      "expected_outcome": "RECOVERABLE_FAILURE",
+      "expected_error_code": "CONNECTION_TEST_FAILED"
+    },
+    {
+      "case_id": "L1-FLT-002",
+      "fault_type": "worker_crash_redelivery",
+      "description": "Celery Worker 在执行中崩溃并触发至少一次重投，验证幂等性无重复副作用",
+      "simulation_params": { "redelivery_count": 2, "idempotency_key": "exec-idem-002" },
+      "expected_outcome": "IDEMPOTENT_NO_DUPLICATE",
+      "expected_error_code": null
+    },
+    {
+      "case_id": "L1-FLT-003",
+      "fault_type": "zeta_submit_unknown",
+      "description": "SeaTunnel Zeta 提交请求响应超时/丢失，必须进入待对账状态而非盲目重提",
+      "simulation_params": { "timeout_ms": 3000, "external_job_id_returned": false },
+      "expected_outcome": "RECONCILIATION_REQUIRED",
+      "expected_error_code": "SEATUNNEL_SUBMIT_UNKNOWN"
+    },
+    {
+      "case_id": "L1-FLT-004",
+      "fault_type": "reject_rate_breach",
+      "description": "整体拒绝率 > 20%（如 25%）必须触发 SUPERVISION_THRESHOLD_BREACHED",
+      "simulation_params": { "validated_rows": 1000, "error_rows": 250, "threshold": 0.20 },
+      "expected_outcome": "SUPERVISION_INTERRUPTED",
+      "expected_error_code": "SUPERVISION_THRESHOLD_BREACHED"
+    },
+    {
+      "case_id": "L1-FLT-005",
+      "fault_type": "reject_rate_exact_boundary",
+      "description": "整体拒绝率恰好等于 20%（200/1000）按契约不得因该条件单独触发中断",
+      "simulation_params": { "validated_rows": 1000, "error_rows": 200, "threshold": 0.20 },
+      "expected_outcome": "ALLOWED_AT_BOUNDARY",
+      "expected_error_code": null
+    },
+    {
+      "case_id": "L1-FLT-006",
+      "fault_type": "schema_drift",
+      "description": "目标发布前检测到影子表与目标表存在不兼容 Schema Drift，阻断原子替换",
+      "simulation_params": { "added_columns": ["unexpected_col"], "type_mismatch": true },
+      "expected_outcome": "PUBLISH_BLOCKED",
+      "expected_error_code": "PUBLISH_SCHEMA_INCOMPATIBLE"
+    }
+  ]
+}
