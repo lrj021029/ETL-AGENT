@@ -1,0 +1,59 @@
+# OpenTelemetry Collector 配置
+# 负责统一接收 OTLP (gRPC/HTTP) 遥测数据，并分别路由至 Tempo (Traces)、Prometheus (Metrics) 与 Loki (Logs)
+
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  # 内存保护限制器，防止本地 Docker 20GB 预算下 OOM
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: 256
+    spike_limit_mib: 64
+
+  # 批量发送处理器，降低下游存储写入压力
+  batch:
+    timeout: 5s
+    send_batch_size: 512
+
+exporters:
+  # Traces 导出到 Grafana Tempo
+  otlp/tempo:
+    endpoint: tempo:4317
+    tls:
+      insecure: true
+
+  # Metrics 暴露为 Prometheus 抓取端点
+  prometheus:
+    endpoint: "0.0.0.0:8889"
+    namespace: ""
+    send_timestamps: true
+    metric_expiration: 5m
+
+  # Logs 通过 OTLP HTTP 推送至 Loki 3.x OTLP 接收端点
+  otlphttp/loki:
+    endpoint: http://loki:3100/otlp
+    tls:
+      insecure: true
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [otlp/tempo]
+
+    metrics:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [prometheus]
+
+    logs:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [otlphttp/loki]

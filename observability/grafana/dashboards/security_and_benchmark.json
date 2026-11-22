@@ -1,0 +1,82 @@
+{
+  "uid": "etl-security-benchmark",
+  "title": "ETL-Agent / 5. Security & Benchmark",
+  "description": "Harness PDP 决策分布、Capability 重放拦截与安全审计事件监控",
+  "tags": ["etl-agent", "security", "harness", "benchmark"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "15s",
+  "time": { "from": "now-1h", "to": "now" },
+  "panels": [
+    {
+      "id": 1,
+      "type": "timeseries",
+      "title": "PDP Decisions by Risk Level & Decision",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (risk_level, decision) (increase(etl_harness_pdp_decisions_total[15m]))",
+          "legendFormat": "{{risk_level}} -> {{decision}}"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "Capability Replay Blocked Total",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (source_component) (increase(etl_harness_replay_blocked_total[15m]))",
+          "legendFormat": "{{source_component}}"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "P0 Denials (1h)",
+      "gridPos": { "h": 6, "w": 6, "x": 0, "y": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(increase(etl_harness_pdp_decisions_total{risk_level=\"P0\",decision=\"DENY\"}[1h]))",
+          "legendFormat": "P0 Denied"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "Total Replay Attempts Blocked (1h)",
+      "gridPos": { "h": 6, "w": 6, "x": 6, "y": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(increase(etl_harness_replay_blocked_total[1h]))",
+          "legendFormat": "Replay Blocked"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "type": "logs",
+      "title": "Security & Harness Log Stream (Loki)",
+      "gridPos": { "h": 6, "w": 12, "x": 12, "y": 8 },
+      "datasource": { "type": "loki", "uid": "loki" },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "{service_name=~\".+\"} |= \"PDP\" or \"CAPABILITY\""
+        }
+      ]
+    }
+  ]
+}

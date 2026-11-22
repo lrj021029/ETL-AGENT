@@ -1,0 +1,81 @@
+{
+  "uid": "etl-platform-health",
+  "title": "ETL-Agent / 1. Platform Health",
+  "description": "平台整体健康度、Outbox 积压、执行成功率与控制面服务存活状态",
+  "tags": ["etl-agent", "platform", "health"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "15s",
+  "time": { "from": "now-1h", "to": "now" },
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "Scrape Targets Up",
+      "gridPos": { "h": 5, "w": 6, "x": 0, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        { "refId": "A", "expr": "sum(up)", "legendFormat": "Up Targets" }
+      ]
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Outbox Pending Events",
+      "gridPos": { "h": 5, "w": 6, "x": 6, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        { "refId": "A", "expr": "etl_outbox_pending_events", "legendFormat": "Pending" }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Execution Throughput (Rows/s)",
+      "gridPos": { "h": 5, "w": 6, "x": 12, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        { "refId": "A", "expr": "sum(rate(etl_execution_write_rows_total[5m]))", "legendFormat": "Write rows/s" }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "PDP Decisions Rate",
+      "gridPos": { "h": 5, "w": 6, "x": 18, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        { "refId": "A", "expr": "sum(rate(etl_harness_pdp_decisions_total[5m]))", "legendFormat": "Decisions/s" }
+      ]
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "Execution Duration P95 (Seconds)",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 5 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.95, sum by (le, execution_mode, status) (rate(etl_execution_duration_seconds_bucket[5m])))",
+          "legendFormat": "{{execution_mode}} ({{status}})"
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "Outbox Pending Events Trend",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 5 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "etl_outbox_pending_events",
+          "legendFormat": "Pending Outbox Events"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,31 @@
+# Grafana Tempo 单机配置（适配 grafana/tempo:2.6.1）
+# 接收 OTel Collector 转发的分布式追踪链路数据
+
+server:
+  http_listen_port: 3200
+  log_level: warn
+
+distributor:
+  receivers:
+    otlp:
+      protocols:
+        grpc:
+          endpoint: 0.0.0.0:4317
+        http:
+          endpoint: 0.0.0.0:4318
+
+ingester:
+  max_block_duration: 5m
+
+compactor:
+  compaction:
+    # 本地链路数据留存期（可按环境策略配置）
+    block_retention: 48h
+
+storage:
+  trace:
+    backend: local
+    wal:
+      path: /var/tempo/wal
+    local:
+      path: /var/tempo/blocks

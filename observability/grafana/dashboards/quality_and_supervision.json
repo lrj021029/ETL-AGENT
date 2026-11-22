@@ -1,0 +1,69 @@
+{
+  "uid": "etl-quality-supervision",
+  "title": "ETL-Agent / 4. Quality & Supervision",
+  "description": "数据质量错误行分布、Reject Rate (20% 阈值线)、输出放大比与预算使用率",
+  "tags": ["etl-agent", "quality", "supervision"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "15s",
+  "time": { "from": "now-1h", "to": "now" },
+  "panels": [
+    {
+      "id": 1,
+      "type": "timeseries",
+      "title": "Reject Rate by Execution & Window (Threshold > 0.20)",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "etl_execution_reject_rate",
+          "legendFormat": "{{execution_id}} ({{window_type}})"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "Error Rows by Quality Error Code",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (execution_mode, error_code) (rate(etl_execution_error_rows_total[5m]))",
+          "legendFormat": "{{error_code}} ({{execution_mode}})"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "Output Amplification Ratio",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "etl_execution_amplification_ratio",
+          "legendFormat": "{{execution_id}}"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "Budget Utilization Ratio",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "etl_execution_budget_utilization_ratio",
+          "legendFormat": "{{execution_id}} ({{budget_type}})"
+        }
+      ]
+    }
+  ]
+}
