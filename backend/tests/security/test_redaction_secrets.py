@@ -91,9 +91,9 @@ def test_encrypted_postgres_provider_roundtrip_versions_and_tamper():
     key = EncryptedPostgresSecretProvider.generate_key()
     p = EncryptedPostgresSecretProvider(store, [key])
     assert isinstance(p, SecretProvider)
-    assert p.put("a", "v1") == 1 and p.put("a", "v2") == 2
-    assert p.get("a").reveal() == "v2" and p.get("a", 1).reveal() == "v1" and p.current_version("a") == 2
-    assert b"v2" not in store.fetch("a", 2).ciphertext  # 静态存储为密文
+    assert p.put("a", "secret-payload-v1!") == 1 and p.put("a", "secret-payload-v2!") == 2
+    assert p.get("a").reveal() == "secret-payload-v2!" and p.get("a", 1).reveal() == "secret-payload-v1!" and p.current_version("a") == 2
+    assert b"secret-payload-v2!" not in store.fetch("a", 2).ciphertext  # 静态存储为密文
     # 跨 ref 替换密文会被关联数据校验捕获
     p.put("b", "other")
     store._rows["b"][0].ciphertext = store._rows["a"][0].ciphertext
@@ -104,7 +104,7 @@ def test_encrypted_postgres_provider_roundtrip_versions_and_tamper():
     # 主密钥轮转：旧密钥仍可解密，新密钥负责重新加密
     new = EncryptedPostgresSecretProvider.generate_key()
     rot = EncryptedPostgresSecretProvider(store, [new, key])
-    assert rot.get("a").reveal() == "v2" and rot.rotate_master_key("a") == 3
+    assert rot.get("a").reveal() == "secret-payload-v2!" and rot.rotate_master_key("a") == 3
     p.delete("a")
     with pytest.raises(HarnessError):
         p.current_version("a")
