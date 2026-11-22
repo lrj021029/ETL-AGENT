@@ -476,7 +476,21 @@ services:
     image: apache/doris:be-2.1.7
     container_name: etl-agent-doris-be
     hostname: doris-be
+    privileged: true
     restart: unless-stopped
+    # 动态解析 doris-fe 与本机容器 IPv4，满足 Doris 2.1.7 entry_point.sh 对 FE_SERVERS/BE_ADDR 必须是 IPv4 的校验规则，并按 Doris 官方 Docker 要求设置容器 Linux VM 的 vm.max_map_count
+    entrypoint:
+      - "bash"
+      - "-c"
+      - |
+        sysctl -w vm.max_map_count=2000000 || true
+        swapoff -a || true
+        FE_IP=$$(getent hosts doris-fe | awk '{print $$1}' | head -n1)
+        BE_IP=$$(hostname -i | awk '{print $$1}')
+        echo "[doris-be-wrapper] resolved FE_SERVERS=fe1:$${FE_IP}:9010 BE_ADDR=$${BE_IP}:9050"
+        export FE_SERVERS="fe1:$${FE_IP}:9010"
+        export BE_ADDR="$${BE_IP}:9050"
+        exec bash entry_point.sh
     environment:
       FE_SERVERS: "fe1:doris-fe:9010"
       BE_ADDR: "doris-be:9050"
@@ -522,11 +536,11 @@ services:
       tempo:
         condition: service_healthy
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:13133/ >/dev/null 2>&1 || exit 0"]
-      interval: 15s
+      test: ["CMD", "/otelcol-contrib", "--version"]
+      interval: 30s
       timeout: 5s
-      retries: 5
-      start_period: 15s
+      retries: 3
+      start_period: 10s
     mem_limit: 512m
     cpus: 1.0
     networks:
