@@ -497,10 +497,14 @@ connections_router = APIRouter(tags=["Connections"])
 
 @connections_router.get("/api/v1/connectors/registry")
 def get_connector_registry(
+    request: Request,
     session: Session = Depends(get_db_session),
     connection_service: ConnectionService = Depends(get_connection_service),
 ) -> dict[str, Any]:
-    """查询版本化 Connector 能力矩阵。"""
+    """查询版本化 Connector 能力矩阵（优先使用已挂载的 ConnectorRegistry 真实契约条目）。"""
+    wired_registry = getattr(request.app.state, "connector_registry", None)
+    if wired_registry is not None and hasattr(wired_registry, "list_entries"):
+        return {"items": [entry.to_dict() for entry in wired_registry.list_entries()]}
     return {"items": connection_service.list_connector_registry(session)}
 
 
@@ -999,6 +1003,7 @@ def cancel_execution(
 @execution_router.post("/{execution_id}/reconcile", status_code=status.HTTP_202_ACCEPTED)
 def reconcile_execution(
     execution_id: uuid.UUID,
+    request: Request,
     ctx: ProjectRequestContext = Depends(require_project_context),
     session: Session = Depends(get_db_session),
 ) -> dict[str, Any]:
@@ -1010,6 +1015,14 @@ def reconcile_execution(
         raise AppError(
             ErrorCode.STATE_TRANSITION_INVALID,
             f"仅 UNKNOWN 或 SUBMITTING 状态允许触发对账，当前状态为 '{run.status}'",
+        )
+    handler = getattr(request.app.state, "execution_reconcile_handler", None)
+    if handler is not None:
+        return handler(
+            session=session,
+            ctx=ctx,
+            run=run,
+            trace_id=resolve_trace_id(request),
         )
     prev_status = run.status
     run.status = "RECONCILING"
@@ -1110,11 +1123,15 @@ extension_hooks_router = APIRouter()
     status_code=status.HTTP_201_CREATED,
 )
 def create_agent_thread_hook(
+    request: Request,
     payload: dict[str, Any] | None = None,
     ctx: ProjectRequestContext = Depends(require_project_context),
     session: Session = Depends(get_db_session),
 ) -> dict[str, Any]:
     """创建受 RLS 保护的 Studio LangGraph 会话线程。"""
+    handler = getattr(request.app.state, "agent_create_thread_handler", None)
+    if handler is not None:
+        return handler(session=session, ctx=ctx, payload=payload)
     body = payload or {}
     thread = AgentThread(
         organization_id=ctx.organization_id,
@@ -1201,6 +1218,7 @@ def resume_agent_thread_hook(
 )
 def get_agent_thread_hook(
     thread_id: uuid.UUID,
+    request: Request,
     ctx: ProjectRequestContext = Depends(require_project_context),
     session: Session = Depends(get_db_session),
 ) -> dict[str, Any]:
@@ -1212,12 +1230,19 @@ def get_agent_thread_hook(
         or thread.project_id != ctx.project_id
     ):
         raise AppError(ErrorCode.TENANT_ACCESS_DENIED, "目标 AgentThread 不存在或越权访问")
+    wiring = getattr(request.app.state, "wiring", None)
+    candidate = (
+        wiring.thread_candidates.get(str(thread.id))
+        if wiring is not None and hasattr(wiring, "thread_candidates")
+        else None
+    )
     return {
         "thread_id": str(thread.id),
         "langgraph_thread_id": thread.langgraph_thread_id,
         "title": thread.title,
         "status": thread.status,
         "pending_clarification": thread.pending_clarification_json,
+        "candidate": candidate,
     }
 
 
@@ -1916,10 +1941,14 @@ def list_benchmark_datasets_hook(
 )
 def create_benchmark_dataset_hook(
     payload: dict[str, Any],
+    request: Request,
     ctx: ProjectRequestContext = Depends(require_project_context),
     session: Session = Depends(get_db_session),
 ) -> dict[str, Any]:
     """生成固定随机种子的确定性 Benchmark 数据集记录。"""
+    handler = getattr(request.app.state, "create_benchmark_dataset_handler", None)
+    if handler is not None:
+        return handler(session=session, ctx=ctx, payload=payload)
     ds = BenchmarkDataset(
         organization_id=ctx.organization_id,
         project_id=ctx.project_id,
@@ -2035,10 +2064,14 @@ def list_policies_hook(
 )
 def create_policy_hook(
     payload: dict[str, Any],
+    request: Request,
     ctx: ProjectRequestContext = Depends(require_project_context),
     session: Session = Depends(get_db_session),
 ) -> dict[str, Any]:
     """创建新版本 PDP 安全策略。"""
+    handler = getattr(request.app.state, "create_policy_handler", None)
+    if handler is not None:
+        return handler(session=session, ctx=ctx, payload=payload)
     pv = PolicyVersion(
         organization_id=ctx.organization_id,
         project_id=ctx.project_id,
