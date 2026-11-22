@@ -30,7 +30,7 @@ def test_text_redaction():
         out = redact_text(c)
         assert not leaked(out), (c, out)
         assert REDACTED in out
-    assert "db:5432/x" in redact_text(cases[0])  # non-secret context preserved
+    assert "db:5432/x" in redact_text(cases[0])  # 非敏感上下文保持原样
 
 
 def test_jws_and_vault_tokens_redacted():
@@ -46,7 +46,7 @@ def test_dict_redaction_deep_and_placeholders_kept():
     out = redact(d)
     assert not leaked(repr(out))
     assert out["password"] == "${SECRET:SRC_PWD}" and out["note"] == "ok" and out["n"] == 3
-    assert d["conn"]["password"] == "S3cr3tPassw0rd!"  # input untouched
+    assert d["conn"]["password"] == "S3cr3tPassw0rd!"  # 原输入字典不被原地修改
 
 
 def test_logging_filter_scrubs_message_args_and_exceptions():
@@ -93,15 +93,15 @@ def test_encrypted_postgres_provider_roundtrip_versions_and_tamper():
     assert isinstance(p, SecretProvider)
     assert p.put("a", "v1") == 1 and p.put("a", "v2") == 2
     assert p.get("a").reveal() == "v2" and p.get("a", 1).reveal() == "v1" and p.current_version("a") == 2
-    assert b"v2" not in store.fetch("a", 2).ciphertext  # encrypted at rest
-    # swapping ciphertext between refs is detected
+    assert b"v2" not in store.fetch("a", 2).ciphertext  # 静态存储为密文
+    # 跨 ref 替换密文会被关联数据校验捕获
     p.put("b", "other")
     store._rows["b"][0].ciphertext = store._rows["a"][0].ciphertext
     with pytest.raises(HarnessError):
         p.get("b")
-    with pytest.raises(HarnessError):  # wrong key
+    with pytest.raises(HarnessError):  # 错误主密钥解密失败
         EncryptedPostgresSecretProvider(store, [EncryptedPostgresSecretProvider.generate_key()]).get("a")
-    # key rotation: old key still decrypts, new key encrypts
+    # 主密钥轮转：旧密钥仍可解密，新密钥负责重新加密
     new = EncryptedPostgresSecretProvider.generate_key()
     rot = EncryptedPostgresSecretProvider(store, [new, key])
     assert rot.get("a").reveal() == "v2" and rot.rotate_master_key("a") == 3

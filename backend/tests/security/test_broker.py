@@ -36,7 +36,7 @@ def test_commit_atomic_transaction_writes_everything(world):
     claims = s.issuances[r.capability_jti]["claims"]
     assert claims["approval_digest"] == world.approvals.digest(p) and claims["pipeline_version_hash"] == H("a")
     assert world.ledger.verify(ORG, PROJ, world.ring) == 1
-    assert world.side_effects == []  # commit itself never touches the outside world
+    assert world.side_effects == []  # Commit 事务本身绝不直接触发外部调用
 
 
 def test_commit_rolls_back_entirely_on_failure(world, monkeypatch):
@@ -52,7 +52,7 @@ def test_commit_rolls_back_entirely_on_failure(world, monkeypatch):
     assert not (s.issuances or s.runs or s.commands or s.outbox_events or s.outbox_deliveries or s.idempotency)
     assert s.consumptions.rows == {} and s.preps.get(p.preparation_id).status == "PREPARED"
     monkeypatch.undo()
-    assert world.commit(p, key="retry").execution_id  # preparation still committable
+    assert world.commit(p, key="retry").execution_id  # 事务回滚后 Preparation 仍可正常重试提交
 
 
 def test_concurrent_double_commit_only_one_succeeds(world):
@@ -78,7 +78,7 @@ def test_concurrent_double_commit_only_one_succeeds(world):
 def test_second_commit_after_success_rejected_and_idempotency(world):
     p = ready(world)
     r1 = world.commit(p, key="same")
-    r2 = world.commit(p, key="same")  # same Idempotency-Key -> original result, nothing new
+    r2 = world.commit(p, key="same")  # 相同 Idempotency-Key 幂等返回原结果，不产生新记录
     assert r2.idempotent_replay and r2.execution_id == r1.execution_id and len(world.store.runs) == 1
     assert code(lambda: world.commit(p, key="other")) == "CAPABILITY_REPLAY_DETECTED"
     assert code(lambda: world.commit(p, key="same", tool="doris.atomic_swap")) == "IDEMPOTENCY_CONFLICT"
@@ -90,7 +90,7 @@ def test_outbox_redelivery_is_idempotent(world):
     payload = world.store.outbox_events[r.outbox_event_id]["payload"]
     first = world.broker.handle_outbox(payload)
     assert first["idempotent"] is False
-    for _ in range(3):  # at-least-once redelivery of the same command_id
+    for _ in range(3):  # 同一 command_id 的至少一次重复投递幂等
         again = world.broker.handle_outbox(copy.deepcopy(payload))
         assert again["idempotent"] is True and again["state"] == "SUBMITTED"
     assert len(world.side_effects) == 1
@@ -180,7 +180,7 @@ def test_rollback_authorization_through_broker(world):
     world.set_live("prod", "RESTRICTED_PII")
     rb = world.prepare_p1()
     world.approve_p1(rb)
-    # rollback needs its own approved preparation; cross-tenant execution is refused
+    # 回滚必须绑定自身获批的 Preparation，且拒绝跨租户执行 ID
     assert code(lambda: world.broker.authorize_rollback(
         organization_id=PROJ, project_id=PROJ, rollback_preparation_id=rb.preparation_id, execution_id=r.execution_id,
         operator=world.operator, idempotency_key="rb0", tool="rollback.swap_restore")) == "TENANT_ACCESS_DENIED"
@@ -195,7 +195,7 @@ def test_rollback_authorization_through_broker(world):
     payload = world.store.outbox_events[rr.outbox_event_id]["payload"]
     assert payload["event_type"] == "ROLLBACK_SWAP_RESTORE" and payload["rollback_run_id"]
     jsonschema.validate(payload, schema("outbox_events.schema.json"))
-    # operator without rollback permission is denied
+    # 无 execution.rollback 权限的操作员被拒绝
     rb2 = world.prepare_p1()
     world.approve_p1(rb2)
     assert code(lambda: world.broker.authorize_rollback(

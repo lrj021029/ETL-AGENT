@@ -1,4 +1,4 @@
-"""Append-only, hash-chained Evidence Ledger with Ed25519 signed checkpoints (ADR-005)."""
+"""仅追加（Append-only）哈希链证据账本（Evidence Ledger）与 Ed25519 签名检查点（ADR-005）。"""
 from __future__ import annotations
 
 import base64
@@ -11,6 +11,7 @@ from app.security.canonical import GENESIS_PREVIOUS_HASH, canonical_bytes, canon
 from app.security.errors import HarnessError
 from app.security.redaction import redact
 
+# 证据事件契约规定的固定字段集合
 EVENT_FIELDS = (
     "event_id", "sequence_no", "timestamp", "actor", "organization_id", "project_id",
     "event_type", "resource_ref", "artifact_hash", "payload_digest",
@@ -19,8 +20,8 @@ TAMPER = "EVIDENCE_CHAIN_TAMPER_DETECTED"
 
 
 class LedgerStore(Protocol):
-    """Bind to `evidence_events` / `evidence_checkpoints` in integration. Appends must be
-    atomic and unique on (organization_id, project_id, sequence_no)."""
+    """证据账本持久化协议（集成阶段绑定至 `evidence_events` 与 `evidence_checkpoints` 表）。
+    写入必须保证原子性，且在 `(organization_id, project_id, sequence_no)` 上强制唯一约束。"""
 
     def tail(self, chain: tuple[str, str]) -> dict | None: ...
     def append(self, chain: tuple[str, str], record: dict) -> None: ...
@@ -30,6 +31,8 @@ class LedgerStore(Protocol):
 
 
 class InMemoryLedgerStore:
+    """内存证据账本存储，强制校验 `sequence_no` 连续单调递增。"""
+
     def __init__(self) -> None:
         self.chains: dict[tuple[str, str], list[dict]] = {}
         self.cps: dict[tuple[str, str], list[dict]] = {}
@@ -59,6 +62,8 @@ def _now() -> str:
 
 
 class EvidenceLedger:
+    """证据账本引擎：按租户+项目维度维护独立 SHA256 哈希链，并按固定步长生成 Ed25519 签名检查点。"""
+
     def __init__(self, store: LedgerStore, signer: Signer, checkpoint_every: int = 50,
                  clock: Callable[[], str] = _now, id_factory: Callable[[], str] | None = None):
         import uuid
@@ -72,6 +77,7 @@ class EvidenceLedger:
                resource_ref: str, artifact_hash: str | None, payload: Any = None,
                payload_digest: str | None = None, event_id: str | None = None,
                timestamp: str | None = None) -> dict:
+        """追加一条证据事件；计算 `payload_digest` 前会先对载荷执行敏感信息脱敏。"""
         chain = (organization_id, project_id)
         if payload_digest is None:
             payload_digest = canonical_digest(redact(payload if payload is not None else {}))
@@ -93,6 +99,7 @@ class EvidenceLedger:
             return rec
 
     def checkpoint(self, organization_id: str, project_id: str) -> dict:
+        """对当前链尾状态生成 Ed25519 签名检查点，记录 `signing_key_id (kid)` 以支持密钥轮转后历史验签。"""
         chain = (organization_id, project_id)
         with self._lock:
             tail = self.store.tail(chain)
@@ -110,6 +117,7 @@ class EvidenceLedger:
             return cp
 
     def verify(self, organization_id: str, project_id: str, keyring: KeyRing) -> int:
+        """校验指定组织与项目的完整证据链及所有签名检查点。"""
         chain = (organization_id, project_id)
         return verify_chain(self.store.events(chain), self.store.checkpoints(chain), keyring,
                             organization_id=organization_id, project_id=project_id)
@@ -117,7 +125,7 @@ class EvidenceLedger:
 
 def verify_chain(records: list[dict], checkpoints: list[dict], keyring: KeyRing, *,
                  organization_id: str | None = None, project_id: str | None = None) -> int:
-    """Full verification. Raises HarnessError(EVIDENCE_CHAIN_TAMPER_DETECTED). Returns event count."""
+    """全链完整性与检查点 Ed25519 签名校验：检测字段篡改、中间删除、重排、截断或伪造签名，异常时抛出 `EVIDENCE_CHAIN_TAMPER_DETECTED`。"""
     prev = GENESIS_PREVIOUS_HASH
     by_seq: dict[int, str] = {}
     for i, rec in enumerate(records, start=1):
@@ -148,3 +156,4 @@ def verify_chain(records: list[dict], checkpoints: list[dict], keyring: KeyRing,
         if len(records) < last:
             raise HarnessError(TAMPER, "chain truncated below checkpoint")
     return len(records)
+

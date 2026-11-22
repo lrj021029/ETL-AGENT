@@ -1,4 +1,4 @@
-"""SecretProvider abstraction: Vault KV v2 (default) and Fernet-encrypted PostgreSQL fallback."""
+"""SecretProvider 抽象与实现：Vault KV v2（默认生产实现）及 Fernet 加密 PostgreSQL 回退实现。"""
 from __future__ import annotations
 
 import threading
@@ -9,7 +9,7 @@ from app.security.errors import HarnessError
 
 
 class SecretValue:
-    """Holds a secret; repr/str are always masked."""
+    """密钥值包装器：`repr`/`str` 始终输出掩码，仅允许通过 `reveal()` 显式解封明文。"""
 
     __slots__ = ("_v", "version")
 
@@ -18,6 +18,7 @@ class SecretValue:
         self.version = version
 
     def reveal(self) -> str:
+        """显式读取密钥明文。"""
         return self._v
 
     def __repr__(self) -> str:
@@ -27,6 +28,7 @@ class SecretValue:
 
 
 def mask(value: str | None, keep: int = 0) -> str:
+    """对密钥字符串进行星号掩码显示。"""
     if not value:
         return ""
     if keep and len(value) > keep * 2 + 4:
@@ -36,6 +38,8 @@ def mask(value: str | None, keep: int = 0) -> str:
 
 @runtime_checkable
 class SecretProvider(Protocol):
+    """统一密钥提供者协议：支持按版本存取、查询当前版本与删除。"""
+
     def put(self, ref: str, value: str) -> int: ...
     def get(self, ref: str, version: int | None = None) -> SecretValue: ...
     def current_version(self, ref: str) -> int: ...
@@ -43,8 +47,7 @@ class SecretProvider(Protocol):
 
 
 class VaultKV2SecretProvider:
-    """Vault KV v2 provider. `client` is an hvac.Client (or any object with the same
-    `secrets.kv.v2` surface). Secret payload is stored under key `value`."""
+    """基于 HashiCorp Vault KV v2 的密钥提供者；`client` 接收 `hvac.Client` 或兼容接口对象，密钥存储在字段 `value` 下。"""
 
     def __init__(self, client: Any, mount_point: str = "secret", prefix: str = "etl-agent"):
         self._c = client
@@ -88,12 +91,16 @@ class VaultKV2SecretProvider:
 
 @dataclass
 class EncryptedRow:
+    """加密密钥存储行：记录密钥引用标识、版本号与密文字节。"""
+
     ref: str
     version: int
     ciphertext: bytes
 
 
 class SecretRowStore(Protocol):
+    """底层密文持久化协议（集成阶段绑定至 PostgreSQL `secrets` 表）。"""
+
     def append(self, ref: str, ciphertext: bytes) -> int: ...
     def fetch(self, ref: str, version: int | None) -> EncryptedRow | None: ...
     def latest_version(self, ref: str) -> int | None: ...
@@ -101,6 +108,8 @@ class SecretRowStore(Protocol):
 
 
 class InMemorySecretRowStore:
+    """线程安全的内存密文行存储，用于确定性单元测试。"""
+
     def __init__(self) -> None:
         self._rows: dict[str, list[EncryptedRow]] = {}
         self._lock = threading.Lock()
@@ -129,10 +138,9 @@ class InMemorySecretRowStore:
 
 
 class EncryptedPostgresSecretProvider:
-    """Fernet (AES-128-CBC + HMAC-SHA256) encrypted secrets; ciphertext persisted via a
-    SecretRowStore (bind to the Backend's `secrets` table in integration). The ref is bound
-    as Fernet-wrapped associated data so ciphertext cannot be swapped between refs.
-    Master key(s) are supplied via env/Vault; first key encrypts, all keys decrypt (rotation)."""
+    """基于 Fernet（AES-128-CBC + HMAC-SHA256）的应用层加密密钥提供者。
+    密文通过 `SecretRowStore` 持久化至数据库；`ref` 作为关联数据一并封装签名以防止跨引用密文替换攻击。
+    主密钥由环境变量或 Vault 注入：`MultiFernet` 使用首把密钥加密，所有历史密钥均可解密以支持平滑轮转。"""
 
     def __init__(self, store: SecretRowStore, master_keys: list[bytes | str]):
         from cryptography.fernet import Fernet, MultiFernet
@@ -144,6 +152,7 @@ class EncryptedPostgresSecretProvider:
 
     @staticmethod
     def generate_key() -> bytes:
+        """生成新的 Fernet 主密钥。"""
         from cryptography.fernet import Fernet
 
         return Fernet.generate_key()
@@ -180,5 +189,6 @@ class EncryptedPostgresSecretProvider:
         self._store.remove(ref)
 
     def rotate_master_key(self, ref: str) -> int:
-        """Re-encrypt latest version under the primary key (new version)."""
+        """使用当前首选主密钥对最新版本重新加密并生成新版本号。"""
         return self.put(ref, self.get(ref).reveal())
+

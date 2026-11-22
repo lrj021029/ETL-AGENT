@@ -1,6 +1,6 @@
-"""Tool Broker: the sole side-effect gateway. Commit / Rollback / Schedule all use ONE atomic
-transaction: capability_issuances + capability_consumptions(jti) + execution_runs +
-execution_commands + outbox_events + outbox_deliveries + evidence_events (ADR-003)."""
+"""Tool Broker（唯一外部副作用出口）：Commit、Rollback 与受管 Schedule 均在同一原子事务内完成
+`capability_issuances` + `capability_consumptions(jti)` + `execution_runs` + `execution_commands` +
+`outbox_events` + `outbox_deliveries` + `evidence_events` 的写入（ADR-003）。"""
 from __future__ import annotations
 
 import copy
@@ -36,9 +36,8 @@ _DENY_CODES = ("PDP_DENIED_P0", "APPROVAL_SELF_APPROVE_FORBIDDEN", "APPROVAL_SLO
 
 
 class InMemoryBrokerStore:
-    """Transactional in-memory stand-in for the PostgreSQL tables. `transaction()` is
-    all-or-nothing and serialized (models SERIALIZABLE / row locks). Bind a SQLAlchemy
-    implementation with the same methods in integration."""
+    """PostgreSQL 事务存储的内存参考实现：`transaction()` 提供串行化全有或全无回滚语义，
+    集成阶段由 SQLAlchemy Session/Connection 事务实现相同接口。"""
 
     def __init__(self) -> None:
         self.preps = InMemoryPreparationStore()
@@ -61,6 +60,7 @@ class InMemoryBrokerStore:
 
     @contextmanager
     def transaction(self):
+        """开启原子事务上下文：块内任何异常都会将所有表状态完整恢复至进入事务前的快照。"""
         with self._lock:
             snap = copy.deepcopy(self._state())
             try:
@@ -74,6 +74,7 @@ class InMemoryBrokerStore:
                 raise
 
     def claim_command(self, command_id: str) -> bool:
+        """Worker 侧对 `execution_commands` 的原子抢占（`PENDING -> DISPATCHING`），保障 Outbox 至少一次投递下的幂等。"""
         with self._lock:
             c = self.commands[command_id]
             if c["state"] != "PENDING":
@@ -84,6 +85,8 @@ class InMemoryBrokerStore:
 
 @dataclass
 class CommitResult:
+    """Broker Commit / Rollback / Schedule 原子提交返回值。"""
+
     execution_id: str
     command_id: str
     capability_jti: str
@@ -97,6 +100,8 @@ def _iso(ts: float) -> str:
 
 
 class ToolBroker:
+    """Tool Broker 核心协调器：唯一获准签发并消费单次 Capability、写入 Outbox 并驱动 Worker 执行外部副作用的网关。"""
+
     def __init__(self, *, store: InMemoryBrokerStore, policy: PolicyEngine, preparations: PreparationService,
                  approvals: ApprovalEngine, issuer: CapabilityIssuer, replay: ReplayGuard, ledger: EvidenceLedger,
                  verifier: CapabilityVerifier, input_resolver: Callable[[Preparation], dict],
@@ -109,9 +114,10 @@ class ToolBroker:
         self._worker_verifier = CapabilityVerifier(verifier.keyring, clock=clock, leeway=worker_grace_seconds)
         self.verifier = verifier
 
-    # ------------------------------------------------------------------ public API
+    # ------------------------------------------------------------------ 公开控制面 API
     def commit(self, *, organization_id: str, project_id: str, preparation_id: str, operator: dict,
                idempotency_key: str, tool: str = "seatunnel.submit_batch", trace_id: str | None = None) -> CommitResult:
+        """Operator 发起的受控 Commit 入口（携带 `Idempotency-Key`）。"""
         if tool not in SUBMIT_TOOLS:
             raise HarnessError("AGENT_TOOL_FORBIDDEN", f"tool {tool} is not a commit tool")
         prep = self._load(preparation_id, organization_id, project_id)
@@ -120,6 +126,7 @@ class ToolBroker:
     def authorize_rollback(self, *, organization_id: str, project_id: str, rollback_preparation_id: str,
                            execution_id: str, operator: dict, idempotency_key: str, tool: str,
                            trace_id: str | None = None) -> CommitResult:
+        """受控回滚授权入口：必须绑定同一租户下目标 `execution_id` 及其 `pipeline_version_hash`，并走完整审批与单次 Capability。"""
         if tool not in ROLLBACK_TOOLS:
             raise HarnessError("AGENT_TOOL_FORBIDDEN", f"tool {tool} is not a rollback tool")
         run = self.store.runs.get(execution_id)
@@ -132,7 +139,7 @@ class ToolBroker:
                           rollback_of=execution_id)
 
     def commit_scheduled(self, sp: StandingSchedulePreparation, fire_time: float, trace_id: str | None = None) -> CommitResult | None:
-        """Celery Beat entry. Runs as `system:scheduler`; full re-verification and the same atomic txn."""
+        """Celery Beat 到点触发入口：以受限系统主体 `system:scheduler` 重验 `StandingSchedulePreparation`、并发/错过策略与预算，签发当次单次 Capability。"""
         now = self._clock()
         if sp.kind != "STANDING_SCHEDULE":
             raise HarnessError("PREPARATION_INVALIDATED", "not a standing schedule preparation")
@@ -156,9 +163,9 @@ class ToolBroker:
         sp.spent_budget += sp.max_budget_per_run
         return res
 
-    # ------------------------------------------------------------------ worker side
+    # ------------------------------------------------------------------ Worker 消费端
     def handle_outbox(self, payload: dict) -> dict:
-        """Celery worker entry (at-least-once). Context comes from the DB row, never the payload."""
+        """Celery Worker 消费 Outbox 事件入口（至少一次投递）：绝不盲信载荷中的租户上下文，强制从数据库行反查并核对 Capability。"""
         cmd = self.store.commands.get(payload.get("command_id"))
         if not cmd:
             raise HarnessError("TENANT_ACCESS_DENIED", "unknown command")
@@ -169,6 +176,7 @@ class ToolBroker:
         return self.execute_command(cmd["command_id"])
 
     def execute_command(self, command_id: str) -> dict:
+        """执行单条 `execution_command`：验签并核对消费记录后通过 `claim_command` 原子抢占，保证重投不重复消费 Capability、不产生第二次外部副作用。"""
         cmd = self.store.commands[command_id]
         run = self.store.runs[cmd["execution_id"]]
         iss = self.store.issuances[cmd["capability_jti"]]
@@ -180,7 +188,7 @@ class ToolBroker:
         if not self.store.consumptions.exists(claims["jti"]):
             raise HarnessError("CAPABILITY_INVALID_SIGNATURE", "capability was never consumed at commit")
         if not self.store.claim_command(command_id):
-            # redelivery: idempotent, no second consumption and no second side effect
+            # Outbox 重复投递：幂等返回既有状态，绝不二次消费 Capability 或二次调用外部执行器
             return {"command_id": command_id, "state": cmd["state"], "idempotent": True, "result": cmd.get("result")}
         executor = self.executors.get(cmd["tool"])
         try:
@@ -188,13 +196,13 @@ class ToolBroker:
                 raise HarnessError("AGENT_TOOL_FORBIDDEN", f"no executor registered for {cmd['tool']}")
             result = executor({"command": dict(cmd), "run": dict(run), "claims": claims})
         except BaseException:
-            cmd["state"] = "UNKNOWN"  # must be reconciled, never blindly re-run
+            cmd["state"] = "UNKNOWN"  # 外部调用异常时进入 UNKNOWN 状态等待对账（Reconcile），绝不盲目重提
             raise
         cmd["state"], cmd["result"] = "SUBMITTED", result
         run["status"] = "SUBMITTING"
         return {"command_id": command_id, "state": "SUBMITTED", "idempotent": False, "result": result}
 
-    # ------------------------------------------------------------------ internals
+    # ------------------------------------------------------------------ 内部核心事务流程
     def _load(self, preparation_id: str, org: str, project: str) -> Preparation:
         prep = self.store.preps.get(preparation_id)
         if prep is None:
@@ -223,7 +231,7 @@ class ToolBroker:
         if prep.status == "INVALIDATED":
             raise HarnessError("PREPARATION_INVALIDATED", "preparation invalidated")
 
-        # 1. re-verify: fingerprint (pipeline hash, metadata, secret versions, policy), expiry
+        # 1. 重验 Preparation 状态、指纹（流水线版本哈希、元数据快照指纹、密钥版本、策略版本）与有效期
         current = self.resolve(prep)
         self.preps.assert_valid(prep, current)
         active_policy = self.policy.store.active.version
@@ -231,7 +239,7 @@ class ToolBroker:
             self._invalidate(prep)
             raise HarnessError("PREPARATION_INVALIDATED", "policy version changed")
 
-        # 2. PDP re-evaluation at commit time
+        # 2. Commit 时刻重新过 PDP 评估并校验审批槽位与 approval_digest
         req = {
             "subject": operator, "organization_id": prep.organization_id, "project_id": prep.project_id, "action": action,
             "resource": {"resource_type": "preparation", "resource_id": prep.preparation_id},
@@ -247,11 +255,11 @@ class ToolBroker:
         if pdp.required_approval_slots != prep.required_slots:
             self._invalidate(prep)
             raise HarnessError("PREPARATION_INVALIDATED", "required approval slots changed under current policy")
-        if pdp.decision == "ALLOW":  # P3: Broker enforces the SAME path; only the approval slot is automatic
+        if pdp.decision == "ALLOW":  # P3 自动化路径：仅自动填充 AUTO_P3 审批槽位，绝不跳过 Broker Capability 与 Outbox
             self.approvals.auto_approve_p3(prep, pdp, current)
         digest = self.approvals.digest(prep)
 
-        # 3. sign capability + Redis fast-path replay guard
+        # 3. 签发 TTL=300s 的 Ed25519 Capability JWS + Redis 快速防重放预检（SET NX EX 360）
         jws, claims = self.issuer.issue(
             sub=operator["user_id"], tool=tool, organization_id=prep.organization_id, project_id=prep.project_id,
             environment=prep.inputs["environment"], preparation_id=prep.preparation_id,
@@ -259,7 +267,7 @@ class ToolBroker:
             policy_version=active_policy)
         self.replay.reserve(claims["jti"])
 
-        # 4. ONE atomic transaction
+        # 4. 单一数据库原子事务写入全部 7 类核心记录
         execution_id, command_id, event_id = str(uuid.uuid4()), str(uuid.uuid4()), str(uuid.uuid4())
         trace = trace_id or uuid.uuid4().hex
         now = self._clock()
@@ -299,3 +307,4 @@ class ToolBroker:
     def _invalidate(self, prep: Preparation) -> None:
         prep.status = "INVALIDATED"
         self.store.preps.save(prep)
+

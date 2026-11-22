@@ -68,7 +68,7 @@ def test_ttl_over_300_cannot_be_issued_or_forged(kit):
     clock, signer, ring, issuer, verifier = kit
     _, claims = issue(issuer, ttl=9999)
     assert claims["exp"] - claims["iat"] == 300
-    # a validly *signed* token with a 3600s ttl is still rejected
+    # 即使签名合法，TTL 超过 300 秒的令牌仍会被拒绝
     import app.capabilities as cap
 
     bad = dict(claims, exp=claims["iat"] + 3600)
@@ -103,7 +103,7 @@ def test_invalid_signature_unknown_kid_alg_confusion(kit):
     clock, signer, ring, issuer, verifier = kit
     tok, _ = issue(issuer)
     other = CapabilityIssuer(LocalEd25519Signer("cap:v1"), clock)
-    forged, _ = issue(other)  # same kid, attacker key
+    forged, _ = issue(other)  # 相同 kid 但使用攻击者私钥签名
     assert code(lambda: verifier.verify(forged)) == "CAPABILITY_INVALID_SIGNATURE"
     rogue, _ = issue(CapabilityIssuer(LocalEd25519Signer("rogue:v1"), clock))
     assert code(lambda: verifier.verify(rogue)) == "CAPABILITY_INVALID_SIGNATURE"
@@ -123,9 +123,9 @@ def test_tool_audience_pairing_enforced(kit):
     assert code(lambda: issue(issuer, tool="shell.exec")) == "CAPABILITY_INVALID_SIGNATURE"
 
 
-# ---------------- Vault Transit adapter with REAL Ed25519 keys
+# ---------------- Vault Transit 签名适配器（真实 Ed25519 密钥对）
 class FakeVaultTransit:
-    """Behaves like Vault Transit /sign for an ed25519 key: returns 'vault:v1:<std-base64 raw 64B sig>'."""
+    """模拟 Vault Transit /sign Ed25519 接口：返回 'vault:v1:<64字节原始签名的标准Base64>'。"""
 
     def __init__(self):
         self.key = LocalEd25519Signer("x")
@@ -141,7 +141,7 @@ def test_vault_transit_signature_is_converted_to_jws_base64url():
     vt = FakeVaultTransit()
     signer = VaultTransitEd25519Signer(vt, "etl-agent-capability", 1)
     ring = KeyRing()
-    ring.add_vault_public_key(signer.kid, base64.b64encode(vt.key.public_raw()).decode())  # Vault returns std-b64 raw pubkey
+    ring.add_vault_public_key(signer.kid, base64.b64encode(vt.key.public_raw()).decode())  # Vault 返回 32 字节原始公钥的标准 Base64
     clock = Clock()
     tok, claims = issue(CapabilityIssuer(signer, clock))
     sig_part = tok.split(".")[2]
@@ -149,7 +149,7 @@ def test_vault_transit_signature_is_converted_to_jws_base64url():
     assert json.loads(b64u_decode(tok.split(".")[0]))["kid"] == "etl-agent-capability:v1"
     assert CapabilityVerifier(ring, clock).verify(tok) == claims
     assert vt.calls == [("etl-agent-capability", 1)]
-    # direct adapter conversion
+    # 直接测试适配器签名格式转换
     raw = vt.key.sign(b"m")
     assert vault_signature_to_b64url("vault:v1:" + base64.b64encode(raw).decode()) == b64u_encode(raw)
     for bad in ("v1:xx", "vault:v1:" + base64.b64encode(b"short").decode(), "garbage"):
@@ -167,7 +167,7 @@ def test_key_rotation_old_kid_still_verifies():
     v.verify(tok_old), v.verify(tok_new)
 
 
-# ---------------- replay
+# ---------------- 双层防重放（ReplayGuard）
 def test_jti_replay_fast_path_blocked():
     g = ReplayGuard(InMemoryFastPath(), InMemoryConsumptionStore())
     g.reserve("j1")
@@ -178,7 +178,7 @@ def test_jti_replay_pg_unique_blocked_even_if_redis_flushed():
     store = InMemoryConsumptionStore()
     ReplayGuard(InMemoryFastPath(), store).consume("j1")
     fresh_redis = ReplayGuard(InMemoryFastPath(), store)
-    fresh_redis.reserve("j1")  # redis lost the key (flush/restart)
+    fresh_redis.reserve("j1")  # 模拟 Redis 丢失键值（重启/驱逐），PG 唯一约束兜底阻断
     assert code(lambda: fresh_redis.consume("j1")) == "CAPABILITY_REPLAY_DETECTED"
 
 

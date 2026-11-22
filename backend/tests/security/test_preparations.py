@@ -29,7 +29,7 @@ def test_fingerprint_drift_invalidates_and_blocks_commit(world, name):
     assert code(lambda: world.commit(p)) == "PREPARATION_INVALIDATED"
     assert world.store.preps.get(p.preparation_id).status == "INVALIDATED"
     assert world.store.runs == {} and world.store.issuances == {} and world.store.consumptions.rows == {}
-    world.set_live()  # even reverting the drift cannot resurrect it
+    world.set_live()  # 即使回退漂移输入，已失效的 Preparation 也不可复活
     assert code(lambda: world.commit(p, key="again")) == "PREPARATION_INVALIDATED"
 
 
@@ -70,7 +70,7 @@ def test_missing_fingerprint_inputs_rejected(world):
     assert code(lambda: world.preps.prepare(maker_id="m", inputs=bad, risk_level="P1", required_slots=[])) == "PREPARATION_INVALIDATED"
 
 
-# -------- standing schedule
+# -------- 受管定时调度（StandingSchedulePreparation）
 def _schedule(world, **kw):
     world.set_live("dev", "INTERNAL")
     world.live["risk_level"] = "P3"
@@ -86,19 +86,19 @@ def test_schedule_fire_uses_full_broker_path(world):
     r = world.broker.commit_scheduled(sp, world.clock.t)
     assert r.capability_jti in world.store.consumptions.rows and len(world.store.outbox_events) == 1
     assert world.store.issuances[r.capability_jti]["claims"]["sub"] == "system:scheduler"
-    again = world.broker.commit_scheduled(sp, world.clock.t)  # same fire -> idempotent
+    again = world.broker.commit_scheduled(sp, world.clock.t)  # 同一触发时间点重入幂等
     assert again.idempotent_replay and len(world.store.outbox_events) == 1
 
 
 def test_schedule_concurrency_forbid_misfire_skip_budget(world):
     sp = _schedule(world, total=1)
     assert world.broker.commit_scheduled(sp, world.clock.t) is not None
-    assert world.broker.commit_scheduled(sp, world.clock.t + 60) is None  # run still active -> FORBID
+    assert world.broker.commit_scheduled(sp, world.clock.t + 60) is None  # 前序运行未结束 -> CONCURRENCY_FORBID 跳过
     world.clock.t += 10_000
     for r in world.store.runs.values():
         r["status"] = "SUCCEEDED"
-    assert world.broker.commit_scheduled(sp, world.clock.t - 5000) is None  # misfire SKIP
-    assert code(lambda: world.broker.commit_scheduled(sp, world.clock.t)) == "PREPARATION_INVALIDATED"  # budget
+    assert world.broker.commit_scheduled(sp, world.clock.t - 5000) is None  # 超过容忍窗口 -> MISFIRE_SKIP 跳过
+    assert code(lambda: world.broker.commit_scheduled(sp, world.clock.t)) == "PREPARATION_INVALIDATED"  # 预算耗尽阻断
 
 
 def test_schedule_fingerprint_drift_blocks_fire(world):

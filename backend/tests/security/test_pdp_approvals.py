@@ -67,7 +67,7 @@ def test_risk_levels_and_slots():
     r = pe.evaluate(_req(op, "execution.commit", "dev", "INTERNAL"))
     assert (r.decision, r.risk_level, r.required_approval_slots) == ("ALLOW", "P3", ["AUTO_P3"])
     assert r.constraints == {"requires_prepare": True, "requires_broker_capability": True, "requires_outbox": True}
-    # caller can only escalate risk, never lower it
+    # 调用方仅允许上调风险等级，绝不能降级
     assert pe.evaluate(_req(op, "execution.commit", "prod", "RESTRICTED_PII", risk="P3")).risk_level == "P1"
     assert pe.evaluate(_req(op, "execution.commit", "dev", "INTERNAL", risk="P2")).risk_level == "P2"
     assert pe.evaluate(_req(subject("x", []), "execution.commit")).reason_codes == ["PERMISSION_DENIED"]
@@ -107,7 +107,7 @@ def test_policy_diff_and_rollback_invalidates_preparations(world):
     v3 = store.rollback(v1).version
     assert v3 not in (v1, v2) and store.get(v3).rules == store.get(v1).rules and store.history() == [v1, v2, v3]
     world.set_live()
-    p = world.prepare_p1()  # under v3... then change policy
+    p = world.prepare_p1()  # 在 v3 下创建 Preparation 后切换策略版本
     store.publish(dict(DEFAULT_RULES))
     assert code(lambda: world.approvals.approve(p, approver=world.dc, slot="DATA_CHECKER",
                                                 current_inputs=world.live)) == "PREPARATION_INVALIDATED"
@@ -116,15 +116,15 @@ def test_policy_diff_and_rollback_invalidates_preparations(world):
 def test_p3_auto_approve_still_requires_broker_capability_and_outbox(world):
     world.set_live("dev", "INTERNAL")
     p = world.prepare("P3", ["AUTO_P3"])
-    assert world.store.runs == {} and world.store.outbox_events == {} and world.store.consumptions.rows == {}  # prepare = zero side effects
+    assert world.store.runs == {} and world.store.outbox_events == {} and world.store.consumptions.rows == {}  # Prepare 阶段零外部副作用
     r = world.commit(p)
     jti = r.capability_jti
     assert jti in world.store.issuances and world.store.consumptions.exists(jti)
     assert len(world.store.outbox_events) == 1 and len(world.store.outbox_deliveries) == 1
-    assert world.side_effects == []  # nothing executed until the worker consumes the outbox
+    assert world.side_effects == []  # Worker 消费 Outbox 前不会触发任何外部副作用
     out = world.broker.handle_outbox(world.store.outbox_events[r.outbox_event_id]["payload"])
     assert out["idempotent"] is False and len(world.side_effects) == 1
-    # users can't fill the AUTO_P3 slot, and an auto approval can't be forged for P1
+    # 人工不可填涂 AUTO_P3 槽位，且 P1 严禁伪造自动审批
     assert code(lambda: world.approvals.approve(p, approver=world.dc, slot="AUTO_P3", current_inputs=world.live)) == "SOD_VIOLATION"
     p1 = world.prepare_p1()
     pdp = world.policy.evaluate(_req(world.operator, "execution.commit", "dev", "INTERNAL"))

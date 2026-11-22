@@ -55,7 +55,7 @@ def _ledger_from_vectors(vectors, every=2):
 def test_ledger_reproduces_vectors_and_verifies(vectors):
     led, store, ring, chain = _ledger_from_vectors(vectors)
     assert led.verify(*chain, ring) == 2
-    assert len(store.checkpoints(chain)) == 1  # checkpoint at seq 2
+    assert len(store.checkpoints(chain)) == 1  # 在 sequence_no=2 处自动生成签名检查点
 
 
 def _big(n=7, every=3):
@@ -110,13 +110,13 @@ def test_tamper_reorder_events():
 def test_tamper_forged_checkpoint_signature():
     led, store, ring, chain = _big()
     cps = copy.deepcopy(store.checkpoints(chain))
-    attacker = LocalEd25519Signer("etl-agent-evidence:v1")  # same kid, different key
+    attacker = LocalEd25519Signer("etl-agent-evidence:v1")  # 相同 kid 但使用攻击者伪造密钥签名
     cps[0]["signature_b64url"] = b64u_encode(attacker.sign(canonical_bytes(cps[0]["payload"])))
     with pytest.raises(HarnessError) as e:
         _verify(store, ring, chain, cps=cps)
     assert e.value.code == TAMPER
     cps = copy.deepcopy(store.checkpoints(chain))
-    cps[0]["payload"]["last_event_hash"] = "sha256:" + "f" * 64  # payload edited, signature stale
+    cps[0]["payload"]["last_event_hash"] = "sha256:" + "f" * 64  # 篡改检查点载荷导致签名失效
     with pytest.raises(HarnessError):
         _verify(store, ring, chain, cps=cps)
 
@@ -126,7 +126,7 @@ def test_tamper_full_rewrite_with_recomputed_hashes_caught_by_checkpoint():
     recs = copy.deepcopy(store.events(chain))
     prev = GENESIS_PREVIOUS_HASH
     recs[1]["event"]["actor"] = "mallory"
-    for r in recs:  # attacker recomputes the whole chain consistently
+    for r in recs:  # 攻击者重算整条哈希链，仍会被已签名检查点捕获
         r["previous_hash"] = prev
         r["event_hash"] = event_hash(r["event"], prev)
         prev = r["event_hash"]

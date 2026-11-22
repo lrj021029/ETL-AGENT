@@ -1,4 +1,4 @@
-"""Maker-Checker approval engine (DATA_CHECKER / SECURITY_CHECKER / SINGLE_CHECKER / AUTO_P3)."""
+"""Maker-Checker 审批槽位引擎（支持 DATA_CHECKER / SECURITY_CHECKER / SINGLE_CHECKER / AUTO_P3）。"""
 from __future__ import annotations
 
 import threading
@@ -23,6 +23,8 @@ _DENY_REASON_TO_CODE = {
 
 @dataclass(frozen=True)
 class Approval:
+    """单槽位审批记录：绑定 `preparation_id`、槽位名称、审批人 ID 与时间戳。"""
+
     preparation_id: str
     slot: str
     approver_id: str
@@ -30,11 +32,15 @@ class Approval:
 
 
 class ApprovalStore(Protocol):
+    """审批记录持久化协议（集成阶段绑定至 PostgreSQL `approvals` 表）。"""
+
     def add(self, a: Approval) -> None: ...
     def for_preparation(self, preparation_id: str) -> list[Approval]: ...
 
 
 class InMemoryApprovalStore:
+    """线程安全的内存审批存储。"""
+
     def __init__(self) -> None:
         self._d: dict[str, list[Approval]] = {}
         self._lock = threading.Lock()
@@ -48,6 +54,7 @@ class InMemoryApprovalStore:
 
 
 def approval_digest(prep: Preparation, approvals: list[Approval]) -> str:
+    """计算审批摘要（`approval_digest`）：覆盖 Preparation 指纹、流水线版本哈希、策略版本及排序后的槽位审批人列表。"""
     return canonical_digest({
         "preparation_id": prep.preparation_id, "preparation_fingerprint": prep.fingerprint,
         "pipeline_version_hash": prep.inputs["pipeline_version_hash"], "policy_version": prep.policy_version,
@@ -58,13 +65,15 @@ def approval_digest(prep: Preparation, approvals: list[Approval]) -> str:
 
 
 class ApprovalEngine:
+    """审批引擎：强制阻断 Maker 自批（`APPROVAL_SELF_APPROVE_FORBIDDEN`）、同一用户占双槽（`APPROVAL_SLOT_CONFLICT`）与 P0 审批。"""
+
     def __init__(self, store: ApprovalStore, policy: PolicyEngine, preparations: PreparationService,
                  clock: Callable[[], float] = time.time):
         self.store, self.policy, self.preps, self._clock = store, policy, preparations, clock
         self._lock = threading.RLock()
 
     def approve(self, prep: Preparation, *, approver: dict, slot: str, current_inputs: dict) -> Approval:
-        """approver: PDP subject dict {user_id, org_role, project_roles, permissions, is_system_principal}."""
+        """执行人工槽位审批；`approver` 为符合 PDP 契约的 `subject` 字典。"""
         with self._lock:
             self.preps.assert_valid(prep, current_inputs)
             if prep.policy_version != self.policy.store.active.version:
@@ -96,8 +105,7 @@ class ApprovalEngine:
             return a
 
     def auto_approve_p3(self, prep: Preparation, pdp: PdpResponse, current_inputs: dict) -> Approval:
-        """P3 auto-approval: only when the PDP itself returned ALLOW/AUTO_P3. It still requires the
-        Broker capability + Outbox path; this merely fills the approval slot."""
+        """P3 自动审批：仅当 PDP 明确返回 `ALLOW` 与 `['AUTO_P3']` 时由 Tool Broker 内部调用，仍必须走完整 Capability + Outbox 路径。"""
         with self._lock:
             self.preps.assert_valid(prep, current_inputs)
             if not (pdp.decision == "ALLOW" and pdp.required_approval_slots == ["AUTO_P3"] and pdp.risk_level == "P3"
@@ -112,10 +120,12 @@ class ApprovalEngine:
             return a
 
     def missing_slots(self, prep: Preparation) -> list[str]:
+        """返回当前 Preparation 尚未集齐的必选审批槽位列表。"""
         have = {a.slot for a in self.store.for_preparation(prep.preparation_id)}
         return [s for s in prep.required_slots if s not in have]
 
     def digest(self, prep: Preparation) -> str:
+        """校验所有必选槽位已集齐且满足 SoD 后，生成确定性 `approval_digest`。"""
         if prep.risk_level == "P0":
             raise HarnessError("PDP_DENIED_P0", "P0 can never be approved")
         if self.missing_slots(prep):
@@ -127,3 +137,4 @@ class ApprovalEngine:
         if prep.maker_id in users:
             raise HarnessError("APPROVAL_SELF_APPROVE_FORBIDDEN", "maker appears among approvers")
         return approval_digest(prep, approvals)
+

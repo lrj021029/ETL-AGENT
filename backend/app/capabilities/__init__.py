@@ -1,4 +1,4 @@
-"""Capability JWS (EdDSA) issuance + verification + replay guard."""
+"""单次 Capability JWS（EdDSA）签发、验签与双层防重放守卫（Redis 快速路径 + PostgreSQL 唯一约束）。"""
 from __future__ import annotations
 
 import json
@@ -15,6 +15,7 @@ from .signing import (
     vault_signature_to_b64url,
 )
 
+# 契约固定常量：TTL 上限 300 秒、签发者、受众与工具映射
 TTL_SECONDS = 300
 ISS = "etl-agent-broker"
 AUDIENCES = {"seatunnel-worker", "publish-adapter", "rollback-executor"}
@@ -28,6 +29,7 @@ TOOL_AUDIENCE = {
     "rollback.shadow_cleanup": "rollback-executor", "rollback.swap_restore": "rollback-executor",
     "rollback.cdc_recover": "rollback-executor",
 }
+# capability_jws.schema.json 定义的 15 个必选 Claims
 CLAIMS = (
     "iss", "sub", "aud", "jti", "iat", "exp", "organization_id", "project_id", "environment", "tool",
     "preparation_id", "pipeline_version_hash", "approval_digest", "policy_version", "nonce",
@@ -40,7 +42,7 @@ BOUND = ("aud", "tool", "organization_id", "project_id", "environment", "prepara
 
 
 def validate_claims(c: dict) -> None:
-    """Strict validation equivalent to contracts/harness/capability_jws.schema.json."""
+    """严格校验 15 项 Capability Claims（等价于 `contracts/harness/capability_jws.schema.json`）。"""
     if set(c) != set(CLAIMS):
         raise HarnessError(INVALID, "claim set mismatch")
     ok = (
@@ -65,6 +67,8 @@ def _compact(obj: dict) -> str:
 
 
 class CapabilityIssuer:
+    """单次 Capability JWS 签发器：固定 `alg=EdDSA`、携带 `kid`，TTL 强制不超过 300 秒。"""
+
     def __init__(self, signer: Signer, clock: Callable[[], float] = time.time):
         self.signer, self._clock = signer, clock
 
@@ -88,12 +92,13 @@ class CapabilityIssuer:
 
 
 class CapabilityVerifier:
+    """Capability JWS 验签器：校验算法、公钥签名、15 项 Claims 结构、TTL 过期以及上下文绑定。"""
+
     def __init__(self, keyring: KeyRing, clock: Callable[[], float] = time.time, leeway: int = 0):
         self.keyring, self._clock, self.leeway = keyring, clock, leeway
 
     def verify(self, token: str, expected: dict | None = None) -> dict:
-        """Verify signature, schema, TTL and (optionally) binding to `expected` context values
-        (any subset of BOUND keys). Replay is enforced separately (ReplayGuard / PG unique jti)."""
+        """校验 Ed25519 签名、Schema、有效期及 `expected` 指定的上下文绑定字段；重放由 `ReplayGuard` 独立拦截。"""
         try:
             h64, c64, s64 = token.split(".")
             header = json.loads(b64u_decode(h64))
@@ -102,7 +107,7 @@ class CapabilityVerifier:
         except Exception:  # noqa: BLE001
             raise HarnessError(INVALID, "malformed token") from None
         if not isinstance(header, dict) or header.get("alg") != "EdDSA" or not header.get("kid"):
-            raise HarnessError(INVALID, "unsupported alg or missing kid")  # blocks alg=none/HS256 confusion
+            raise HarnessError(INVALID, "unsupported alg or missing kid")  # 阻断 alg=none / HS256 算法混淆攻击
         try:
             pub = self.keyring.get(header["kid"])
             pub.verify(sig, f"{h64}.{c64}".encode("ascii"))
@@ -123,13 +128,15 @@ class CapabilityVerifier:
         return claims
 
 
-# ---------------------------------------------------------------- replay guard
+# ---------------------------------------------------------------- 防重放守卫（Replay Guard）
 class FastPath(Protocol):
+    """快速防重放预检协议（对应 Redis `SET key 1 NX EX 360`）。"""
+
     def set_nx(self, key: str, ttl_seconds: int) -> bool: ...
 
 
 class InMemoryFastPath:
-    """Redis `SET key 1 NX EX ttl` stand-in."""
+    """内存版 `SET key 1 NX EX ttl` 实现，用于单测与本地替身。"""
 
     def __init__(self, clock: Callable[[], float] = time.time):
         self._d: dict[str, float] = {}
@@ -146,6 +153,8 @@ class InMemoryFastPath:
 
 
 class RedisFastPath:
+    """生产 Redis 快速防重放适配器（`SET prefix+jti 1 NX EX 360`）。"""
+
     def __init__(self, client: Any, prefix: str = "etl:cap:jti:"):
         self._c, self._p = client, prefix
 
@@ -154,17 +163,21 @@ class RedisFastPath:
 
 
 class DuplicateJti(Exception):
-    pass
+    """`jti` 唯一约束冲突内部信号。"""
 
 
 class ConsumptionStore(Protocol):
+    """Capability 消费记录持久化协议（对应 `capability_consumptions(jti UNIQUE)` 表）。"""
+
     def insert(self, jti: str, **fields: Any) -> None:
-        """Raise DuplicateJti on unique violation."""
+        """插入已消费的 `jti`；若唯一约束冲突则抛出 `DuplicateJti`。"""
 
     def exists(self, jti: str) -> bool: ...
 
 
 class InMemoryConsumptionStore:
+    """线程安全的内存 `capability_consumptions` 存储。"""
+
     def __init__(self) -> None:
         self.rows: dict[str, dict] = {}
         self._lock = threading.Lock()
@@ -180,9 +193,8 @@ class InMemoryConsumptionStore:
 
 
 class SqlAlchemyConsumptionStore:
-    """Core-table adapter for `capability_consumptions(jti PRIMARY KEY, ...)`. Pass the
-    Backend's Table (or use `make_table`). Insert on an open Connection so it joins the
-    caller's transaction."""
+    """SQLAlchemy Core 适配器，绑定至 `capability_consumptions(jti PRIMARY KEY, ...)`。
+    在外部传入的 `Connection` 上使用 SAVEPOINT（`begin_nested`）执行插入，以加入调用方的同一事务。"""
 
     def __init__(self, connection: Any, table: Any):
         self._conn, self._t = connection, table
@@ -212,7 +224,7 @@ class SqlAlchemyConsumptionStore:
 
 
 class ReplayGuard:
-    """Two layers: Redis fast path (SET NX EX 360) and PG unique(jti) as the source of truth."""
+    """双层防重放守卫：第一层 Redis 快速路径（`SET NX EX 360`），第二层 PostgreSQL `jti` 唯一约束作为最终事实源。"""
 
     FAST_TTL = 360
 
@@ -220,11 +232,14 @@ class ReplayGuard:
         self.fast, self.store = fast, store
 
     def reserve(self, jti: str) -> None:
+        """在 Redis 快速路径中预占 `jti`；若已存在则立即抛出 `CAPABILITY_REPLAY_DETECTED`。"""
         if not self.fast.set_nx(jti, self.FAST_TTL):
             raise HarnessError("CAPABILITY_REPLAY_DETECTED", "jti already seen (fast path)")
 
     def consume(self, jti: str, **fields: Any) -> None:
+        """在数据库事务内持久化消费 `jti`；即使 Redis 重启丢失，数据库唯一约束仍会阻断重放。"""
         try:
             self.store.insert(jti, **fields)
         except DuplicateJti:
             raise HarnessError("CAPABILITY_REPLAY_DETECTED", "jti already consumed") from None
+
