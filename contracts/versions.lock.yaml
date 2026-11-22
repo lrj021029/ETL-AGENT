@@ -21,8 +21,9 @@ containers:
     status: "MANIFEST_VERIFIED"
     notes: "Persistent file storage default; KV v2 + Transit Ed25519"
   minio:
-    image: "minio/minio:RELEASE.2024-12-18T13-15-44Z"
-    status: "TARGET_LOCKED"
+    image: "coollabsio/minio:latest"
+    status: "MANIFEST_VERIFIED"
+    notes: "Official Docker Hub minio/minio repository removed public pull access; switched to verified mirror"
   mailpit:
     image: "axllent/mailpit:v1.21"
     status: "TARGET_LOCKED"
