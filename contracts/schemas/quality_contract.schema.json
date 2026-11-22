@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://etl-agent.local/contracts/schemas/quality_contract.schema.json",
+  "title": "QualityContract",
+  "description": "Two-stage QualityContract (Stage 1: Streaming Row Split; Stage 2: Shadow Table SQL/UNIQUE Validation). Contract v1.0.0.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "error_table_name", "raw_value_storage_policy", "rules"],
+  "properties": {
+    "schema_version": { "type": "string", "const": "1.0.0" },
+    "error_table_name": { "type": "string", "minLength": 1, "maxLength": 128 },
+    "raw_value_storage_policy": {
+      "type": "string",
+      "enum": ["REDACTED_BY_CLASSIFICATION", "HASH_ONLY", "OMIT_SENSITIVE"]
+    },
+    "rules": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["rule_id", "rule_type", "stage", "error_code", "severity", "params"],
+        "properties": {
+          "rule_id": { "type": "string", "minLength": 1, "maxLength": 64 },
+          "rule_type": {
+            "type": "string",
+            "enum": ["NOT_NULL", "DATA_TYPE", "REGEX", "RANGE", "UNIQUE", "ENUM", "RESTRICTED_SQL"]
+          },
+          "stage": {
+            "type": "string",
+            "enum": ["STREAMING_ROW_SPLIT", "SHADOW_TABLE_VALIDATION"]
+          },
+          "column_name": { "type": ["string", "null"] },
+          "error_code": { "type": "string", "pattern": "^DQ_[A-Z0-9_]+$" },
+          "severity": { "type": "string", "enum": ["REJECT_ROW", "FAIL_RUN", "WARN"] },
+          "params": { "type": "object" },
+          "sql_dialect": { "type": ["string", "null"], "enum": [null, "mysql", "postgres", "doris"] },
+          "sql_text": { "type": ["string", "null"] }
+        }
+      }
+    }
+  }
+}

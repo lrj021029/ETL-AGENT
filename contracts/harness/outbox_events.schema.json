@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://etl-agent.local/contracts/harness/outbox_events.schema.json",
+  "title": "OutboxEventPayload",
+  "description": "At-least-once Outbox command payload delivered to Celery Worker. Worker NEVER trusts payload tenant_id directly; it resolves context from PostgreSQL execution_runs/execution_commands.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "event_type",
+    "command_id",
+    "execution_id",
+    "capability_jti",
+    "capability_jws",
+    "trace_id",
+    "created_at"
+  ],
+  "properties": {
+    "schema_version": { "type": "string", "const": "1.0.0" },
+    "event_type": {
+      "type": "string",
+      "enum": [
+        "EXECUTION_SUBMIT_BATCH",
+        "EXECUTION_SUBMIT_CDC",
+        "EXECUTION_CANCEL",
+        "EXECUTION_PUBLISH_SWAP",
+        "ROLLBACK_SHADOW_CLEANUP",
+        "ROLLBACK_SWAP_RESTORE",
+        "ROLLBACK_CDC_RECOVER"
+      ]
+    },
+    "command_id": { "type": "string", "format": "uuid" },
+    "execution_id": { "type": "string", "format": "uuid" },
+    "rollback_run_id": { "type": ["string", "null"], "format": "uuid" },
+    "capability_jti": { "type": "string", "format": "uuid" },
+    "capability_jws": { "type": "string", "minLength": 20 },
+    "trace_id": { "type": "string", "minLength": 8 },
+    "created_at": { "type": "string", "format": "date-time" }
+  }
+}

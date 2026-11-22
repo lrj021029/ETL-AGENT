@@ -1,0 +1,221 @@
+openapi: "3.1.0"
+info:
+  title: "ETL-Agent Control Plane API"
+  version: "1.0.0"
+  description: >
+    Layer 0 Frozen OpenAPI Contract covering all 16 control-plane modules.
+    Every project-scoped endpoint enforces Organization + Project membership,
+    RBAC + ABAC, PostgreSQL transaction-scoped RLS, and response secret redaction.
+
+servers:
+  - url: "http://127.0.0.1:8000"
+    description: "Local Windows Control Plane"
+
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  parameters:
+    OrgIdHeader:
+      name: X-Organization-Id
+      in: header
+      required: true
+      schema: { type: string, format: uuid }
+    ProjectIdPath:
+      name: project_id
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      schema: { type: string, minLength: 8, maxLength: 128 }
+
+  schemas:
+    ErrorResponse:
+      type: object
+      required: [error_code, message, trace_id]
+      properties:
+        error_code: { type: string }
+        message: { type: string }
+        detail: { type: ["object", "array", "null"] }
+        trace_id: { type: string }
+    PageMeta:
+      type: object
+      required: [total, page, page_size]
+      properties:
+        total: { type: integer }
+        page: { type: integer }
+        page_size: { type: integer }
+    HealthResponse:
+      type: object
+      required: [status, service, version, dependencies]
+      properties:
+        status: { type: string, enum: [ok, degraded] }
+        service: { type: string }
+        version: { type: string }
+        dependencies: { type: object }
+
+paths:
+  # 0. Health
+  /health:
+    get:
+      tags: [Health]
+      summary: "Control Plane health and dependency status"
+      responses:
+        "200":
+          description: "OK"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/HealthResponse" }
+
+  # 1. Auth
+  /api/v1/auth/login:
+    post: { tags: [Auth], summary: "Password login -> issues Email OTP challenge (邮件二次验证)", responses: { "200": { description: "Challenge created" } } }
+  /api/v1/auth/otp/verify:
+    post: { tags: [Auth], summary: "Verify Email OTP -> issues JWT Access + Refresh token pair", responses: { "200": { description: "Authenticated" } } }
+  /api/v1/auth/refresh:
+    post: { tags: [Auth], summary: "Rotate Refresh Token Family", responses: { "200": { description: "Rotated" } } }
+  /api/v1/auth/logout:
+    post: { tags: [Auth], summary: "Revoke current session and refresh family", responses: { "204": { description: "Revoked" } } }
+  /api/v1/auth/me:
+    get: { tags: [Auth], summary: "Current user profile, organizations, projects and roles", responses: { "200": { description: "Profile" } } }
+
+  # 2. Organizations
+  /api/v1/organizations:
+    get: { tags: [Organizations], summary: "List organizations for current user", responses: { "200": { description: "List" } } }
+    post: { tags: [Organizations], summary: "Create organization", responses: { "201": { description: "Created" } } }
+  /api/v1/organizations/{org_id}/members:
+    get: { tags: [Organizations], summary: "List organization members", responses: { "200": { description: "Members" } } }
+    post: { tags: [Organizations], summary: "Add organization member", responses: { "201": { description: "Added" } } }
+
+  # 3. Projects
+  /api/v1/projects:
+    get: { tags: [Projects], summary: "List projects in active organization", responses: { "200": { description: "List" } } }
+    post: { tags: [Projects], summary: "Create project", responses: { "201": { description: "Created" } } }
+  /api/v1/projects/{project_id}/members:
+    get: { tags: [Projects], summary: "List project members and role bindings", responses: { "200": { description: "Members" } } }
+    post: { tags: [Projects], summary: "Add project member with role binding", responses: { "201": { description: "Added" } } }
+  /api/v1/projects/{project_id}/roles:
+    get: { tags: [Projects], summary: "List system + custom project roles", responses: { "200": { description: "Roles" } } }
+    post: { tags: [Projects], summary: "Create custom project role (cannot override system SoD)", responses: { "201": { description: "Created" } } }
+  /api/v1/projects/{project_id}/overview:
+    get: { tags: [Projects], summary: "Overview dashboard aggregated stats from real DB facts", responses: { "200": { description: "Overview" } } }
+
+  # 4. Connections & Secrets & Connector Registry
+  /api/v1/connectors/registry:
+    get: { tags: [Connections], summary: "Versioned Connector Capability Matrix", responses: { "200": { description: "Matrix" } } }
+  /api/v1/projects/{project_id}/connections:
+    get: { tags: [Connections], summary: "List connections (secrets masked)", responses: { "200": { description: "List" } } }
+    post: { tags: [Connections], summary: "Create connection with SecretProvider ref", responses: { "201": { description: "Created" } } }
+  /api/v1/projects/{project_id}/connections/{connection_id}/test:
+    post: { tags: [Connections], summary: "Read-only connectivity probe", responses: { "200": { description: "Probe result" } } }
+  /api/v1/projects/{project_id}/files/upload:
+    post: { tags: [Connections], summary: "Upload file into tenant-isolated MinIO bucket", responses: { "201": { description: "Uploaded" } } }
+
+  # 5. Metadata
+  /api/v1/projects/{project_id}/connections/{connection_id}/metadata/probe:
+    post: { tags: [Metadata], summary: "Run read-only metadata probe -> creates immutable MetadataSnapshot", responses: { "201": { description: "Snapshot created" } } }
+  /api/v1/projects/{project_id}/connections/{connection_id}/metadata/snapshots:
+    get: { tags: [Metadata], summary: "List immutable metadata snapshots", responses: { "200": { description: "Snapshots" } } }
+  /api/v1/projects/{project_id}/connections/{connection_id}/metadata/drift:
+    get: { tags: [Metadata], summary: "Schema drift history between snapshots", responses: { "200": { description: "Drift events" } } }
+  /api/v1/projects/{project_id}/metadata/snapshots/{snapshot_id}/classifications:
+    patch: { tags: [Metadata], summary: "Manually mark sensitive column classification", responses: { "200": { description: "Updated" } } }
+
+  # 6. Agent (LangGraph - read-only & generation only, ZERO side effects)
+  /api/v1/projects/{project_id}/agent/threads:
+    post: { tags: [Agent], summary: "Create Studio LangGraph thread", responses: { "201": { description: "Thread created" } } }
+  /api/v1/projects/{project_id}/agent/threads/{thread_id}/invoke:
+    post: { tags: [Agent], summary: "Submit NL requirement; may interrupt for clarification (PG checkpoint)", responses: { "200": { description: "Graph state" } } }
+  /api/v1/projects/{project_id}/agent/threads/{thread_id}/resume:
+    post: { tags: [Agent], summary: "Resume interrupted thread after permission re-check", responses: { "200": { description: "Graph state" } } }
+  /api/v1/projects/{project_id}/agent/threads/{thread_id}:
+    get: { tags: [Agent], summary: "Get LangGraph thread state and LLM audit summary", responses: { "200": { description: "State" } } }
+
+  # 7. Pipeline & Artifacts
+  /api/v1/projects/{project_id}/pipelines:
+    get: { tags: [Pipeline], summary: "List pipeline definitions", responses: { "200": { description: "Pipelines" } } }
+    post: { tags: [Pipeline], summary: "Create pipeline definition", responses: { "201": { description: "Created" } } }
+  /api/v1/projects/{project_id}/pipelines/{pipeline_id}/drafts/validate:
+    post: { tags: [Pipeline], summary: "Run deterministic gate (Schema/SQL AST/HOCON/Connector/Contracts)", responses: { "200": { description: "Gate report" } } }
+  /api/v1/projects/{project_id}/pipelines/{pipeline_id}/versions:
+    get: { tags: [Pipeline], summary: "List immutable PipelineVersions", responses: { "200": { description: "Versions" } } }
+    post: { tags: [Pipeline], summary: "Freeze validated draft into immutable PipelineVersion + SHA256 Manifest", responses: { "201": { description: "Frozen" } } }
+  /api/v1/projects/{project_id}/pipeline-versions/{version_id}/manifest:
+    get: { tags: [Pipeline], summary: "Get immutable ArtifactManifest and SHA256 digest", responses: { "200": { description: "Manifest" } } }
+
+  # 8. Preparation (Harness Step 1 - ZERO external side effects)
+  /api/v1/projects/{project_id}/preparations:
+    get: { tags: [Preparation], summary: "List preparations", responses: { "200": { description: "List" } } }
+    post: { tags: [Preparation], summary: "Create Preparation via PDP (freezes facts, fingerprint, slots, budget)", responses: { "201": { description: "Prepared" } } }
+  /api/v1/projects/{project_id}/preparations/{preparation_id}:
+    get: { tags: [Preparation], summary: "View frozen Preparation facts, fingerprint and validity", responses: { "200": { description: "Preparation" } } }
+
+  # 9. Approvals (Harness Step 2 - Maker-Checker SoD)
+  /api/v1/projects/{project_id}/preparations/{preparation_id}/approvals:
+    get: { tags: [Approvals], summary: "View approval slots and decision history", responses: { "200": { description: "Slots" } } }
+    post: { tags: [Approvals], summary: "Submit named Checker approval or rejection (strict SoD)", responses: { "201": { description: "Recorded" } } }
+
+  # 10. Commit (Harness Step 3 - Operator + Tool Broker + Atomic Capability/Run/Outbox)
+  /api/v1/projects/{project_id}/preparations/{preparation_id}/commit:
+    post:
+      tags: [Commit]
+      summary: "Operator Commit: re-verify, issue+consume Ed25519 Capability, create ExecutionRun + Outbox atomically"
+      parameters: [{ $ref: "#/components/parameters/IdempotencyKey" }]
+      responses:
+        "202": { description: "Accepted with execution_id and command_id" }
+
+  # 11. Execution & Realtime
+  /api/v1/projects/{project_id}/executions:
+    get: { tags: [Execution], summary: "List ExecutionRuns (BATCH and CDC)", responses: { "200": { description: "Runs" } } }
+  /api/v1/projects/{project_id}/executions/{execution_id}:
+    get: { tags: [Execution], summary: "Get ExecutionRun details, confirmation_state, metrics, diagnosis", responses: { "200": { description: "Run" } } }
+  /api/v1/projects/{project_id}/executions/{execution_id}/events:
+    get: { tags: [Execution], summary: "SSE real-time execution state and metrics stream", responses: { "200": { description: "text/event-stream" } } }
+  /api/v1/projects/{project_id}/executions/{execution_id}/cancel:
+    post: { tags: [Execution], summary: "Managed cancel/stop via Tool Broker", responses: { "202": { description: "Cancel command queued" } } }
+  /api/v1/projects/{project_id}/executions/{execution_id}/reconcile:
+    post: { tags: [Execution], summary: "Trigger reconciliation for UNKNOWN execution", responses: { "202": { description: "Reconciliation queued" } } }
+
+  # 12. Scheduling
+  /api/v1/projects/{project_id}/schedules:
+    get: { tags: [Scheduling], summary: "List schedules", responses: { "200": { description: "Schedules" } } }
+    post: { tags: [Scheduling], summary: "Create schedule bound to approved StandingSchedulePreparation", responses: { "201": { description: "Created" } } }
+  /api/v1/projects/{project_id}/schedules/{schedule_id}/toggle:
+    patch: { tags: [Scheduling], summary: "Enable or disable schedule", responses: { "200": { description: "Updated" } } }
+
+  # 13. Quality & Published Datasets
+  /api/v1/projects/{project_id}/executions/{execution_id}/quality-report:
+    get: { tags: [Quality], summary: "Get quality report, rule results and redacted error summary", responses: { "200": { description: "Report" } } }
+  /api/v1/projects/{project_id}/published-datasets:
+    get: { tags: [Quality], summary: "List PublishedDatasetVersions for target tables", responses: { "200": { description: "Datasets" } } }
+
+  # 14. Rollback (All rollbacks go through Harness)
+  /api/v1/projects/{project_id}/rollbacks/prepare:
+    post: { tags: [Rollback], summary: "Prepare managed rollback (shadow cleanup / swap restore / CDC recovery)", responses: { "201": { description: "Rollback prepared" } } }
+  /api/v1/projects/{project_id}/rollbacks:
+    get: { tags: [Rollback], summary: "List rollback runs and audit status", responses: { "200": { description: "Rollbacks" } } }
+
+  # 15. Evidence Ledger (Read-only)
+  /api/v1/projects/{project_id}/evidence/events:
+    get: { tags: [Evidence], summary: "Query append-only Evidence Ledger events", responses: { "200": { description: "Events" } } }
+  /api/v1/projects/{project_id}/evidence/checkpoints:
+    get: { tags: [Evidence], summary: "List Ed25519 signed checkpoints", responses: { "200": { description: "Checkpoints" } } }
+  /api/v1/projects/{project_id}/evidence/verify:
+    post: { tags: [Evidence], summary: "Verify SHA256 hash chain and Ed25519 checkpoint signatures", responses: { "200": { description: "Verification result" } } }
+
+  # 16. Benchmark & Policy Governance
+  /api/v1/projects/{project_id}/benchmarks/datasets:
+    get: { tags: [Benchmark], summary: "List versioned deterministic benchmark datasets", responses: { "200": { description: "Datasets" } } }
+    post: { tags: [Benchmark], summary: "Generate deterministic 10K/100K/1M dataset with fixed seed", responses: { "201": { description: "Generated" } } }
+  /api/v1/projects/{project_id}/benchmarks/runs:
+    get: { tags: [Benchmark], summary: "List L0/L1/L2 benchmark runs and version comparisons", responses: { "200": { description: "Runs" } } }
+    post: { tags: [Benchmark], summary: "Trigger L0/L1/L2 benchmark run (P0/P1 hard gate enforced)", responses: { "202": { description: "Queued" } } }
+  /api/v1/projects/{project_id}/policies:
+    get: { tags: [Benchmark], summary: "List versioned PDP policies and diffs", responses: { "200": { description: "Policies" } } }
+    post: { tags: [Benchmark], summary: "Create new versioned PDP policy", responses: { "201": { description: "Created" } } }

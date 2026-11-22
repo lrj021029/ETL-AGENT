@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://etl-agent.local/contracts/schemas/runtime_supervision.schema.json",
+  "title": "RuntimeSupervisionContract",
+  "description": "Frozen Runtime Supervision thresholds. Confirmed: reject_rate = error_rows / validated_rows; max_reject_rate_total=0.20 triggers strictly on > 0.20 (== 0.20 does NOT trigger). Other thresholds remain configurable per PRD-TBD-08/14.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "max_read_rows",
+    "max_write_bytes",
+    "max_duration_seconds",
+    "max_amplification_ratio",
+    "max_reject_rate_total",
+    "max_reject_rate_window",
+    "window_definition",
+    "min_validated_rows",
+    "max_error_rows_absolute",
+    "action_on_breach"
+  ],
+  "properties": {
+    "schema_version": { "type": "string", "const": "1.0.0" },
+    "max_read_rows": { "type": "integer", "minimum": 1 },
+    "max_write_bytes": { "type": "integer", "minimum": 1024 },
+    "max_duration_seconds": { "type": "integer", "minimum": 10 },
+    "max_amplification_ratio": { "type": "number", "exclusiveMinimum": 0 },
+    "max_reject_rate_total": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1,
+      "default": 0.2,
+      "description": "Confirmed comparison operator is strictly greater-than (>). Exactly 0.20 does not trigger."
+    },
+    "max_reject_rate_window": { "type": "number", "minimum": 0, "maximum": 1 },
+    "window_definition": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mode", "size"],
+      "properties": {
+        "mode": { "type": "string", "enum": ["ROW_COUNT", "TIME_SECONDS"] },
+        "size": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "min_validated_rows": { "type": "integer", "minimum": 1 },
+    "max_error_rows_absolute": { "type": "integer", "minimum": 1 },
+    "action_on_breach": { "type": "string", "enum": ["HARD_INTERRUPT", "ALERT_ONLY"] },
+    "cdc_max_lag_seconds": { "type": ["integer", "null"], "minimum": 1 }
+  }
+}

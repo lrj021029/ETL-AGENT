@@ -1,0 +1,18 @@
+contract_version: "1.0.0"
+transport:
+  primary: "SSE"
+  fallback: "HTTP_POLLING"
+  endpoint_pattern: "/api/v1/projects/{project_id}/executions/{execution_id}/events"
+  polling_endpoint: "/api/v1/projects/{project_id}/executions/{execution_id}"
+  frontend_adapter_note: "Encapsulated behind RealtimeStreamAdapter interface so transport remains replaceable."
+
+events:
+  - name: "execution.state_changed"
+    payload_fields: [execution_id, execution_mode, from_status, to_status, confirmation_state, external_job_id, reason_code, occurred_at, trace_id]
+    confirmation_state_enum: [REQUEST_SUBMITTED, ENGINE_CONFIRMED, RECONCILIATION_PENDING]
+  - name: "execution.metrics_tick"
+    payload_fields: [execution_id, sampled_at, read_rows, validated_rows, valid_rows, write_rows, write_bytes, error_rows, reject_rate_total, reject_rate_window, throughput_rps, duration_seconds, amplification_ratio, cdc_lag_ms]
+  - name: "execution.supervision_alert"
+    payload_fields: [execution_id, breach_type, threshold, observed_value, action_taken, occurred_at]
+  - name: "execution.heartbeat"
+    payload_fields: [server_time]

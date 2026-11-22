@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://etl-agent.local/contracts/harness/capability_jws.schema.json",
+  "title": "CapabilityJWSClaims",
+  "description": "Single-use Ed25519 signed Capability Token claims (TTL = 300s). Header must specify alg=EdDSA and kid.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "iss",
+    "sub",
+    "aud",
+    "jti",
+    "iat",
+    "exp",
+    "organization_id",
+    "project_id",
+    "environment",
+    "tool",
+    "preparation_id",
+    "pipeline_version_hash",
+    "approval_digest",
+    "policy_version",
+    "nonce"
+  ],
+  "properties": {
+    "iss": { "type": "string", "const": "etl-agent-broker" },
+    "sub": { "type": "string", "minLength": 1 },
+    "aud": { "type": "string", "enum": ["seatunnel-worker", "publish-adapter", "rollback-executor"] },
+    "jti": { "type": "string", "format": "uuid" },
+    "iat": { "type": "integer" },
+    "exp": { "type": "integer", "description": "Must satisfy exp - iat <= 300" },
+    "organization_id": { "type": "string", "format": "uuid" },
+    "project_id": { "type": "string", "format": "uuid" },
+    "environment": { "type": "string", "enum": ["dev", "staging", "prod"] },
+    "tool": {
+      "type": "string",
+      "enum": [
+        "seatunnel.submit_batch",
+        "seatunnel.submit_cdc",
+        "seatunnel.cancel_job",
+        "doris.atomic_swap",
+        "rollback.shadow_cleanup",
+        "rollback.swap_restore",
+        "rollback.cdc_recover"
+      ]
+    },
+    "preparation_id": { "type": "string", "format": "uuid" },
+    "pipeline_version_hash": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+    "approval_digest": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+    "policy_version": { "type": "string", "minLength": 1 },
+    "nonce": { "type": "string", "minLength": 16, "maxLength": 128 }
+  }
+}

@@ -1,0 +1,77 @@
+{
+  "contract_version": "1.0.0",
+  "canonical_json_vectors": [
+    {
+      "name": "nested_unicode_key_sort",
+      "input": {
+        "b": 1,
+        "a": "订单宽表",
+        "c": [
+          true,
+          null,
+          0,
+          {
+            "z": "x",
+            "y": "w"
+          }
+        ]
+      },
+      "expected_canonical": "{\"a\":\"订单宽表\",\"b\":1,\"c\":[true,null,0,{\"y\":\"w\",\"z\":\"x\"}]}",
+      "expected_sha256": "sha256:f936a6e449865e2d0c236b2c6fb67e55fcf9cd896f09244ae9340126efc4649b"
+    },
+    {
+      "name": "artifact_manifest_sample",
+      "input": {
+        "schema_version": "1.0.0",
+        "pipeline_id": "pipe_001",
+        "revision": 1,
+        "sql_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "secret_refs": [
+          {
+            "placeholder": "${SECRET:SRC_PWD}",
+            "secret_version": 2
+          }
+        ]
+      },
+      "expected_canonical": "{\"pipeline_id\":\"pipe_001\",\"revision\":1,\"schema_version\":\"1.0.0\",\"secret_refs\":[{\"placeholder\":\"${SECRET:SRC_PWD}\",\"secret_version\":2}],\"sql_hash\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}",
+      "expected_sha256": "sha256:51270f4c86a81678027e2d069f6722f1a477844e9b9e669d0c34744f567ff08c"
+    }
+  ],
+  "evidence_chain_vectors": {
+    "genesis_previous_hash": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+    "events": [
+      {
+        "event": {
+          "event_id": "00000000-0000-0000-0000-000000000001",
+          "sequence_no": 1,
+          "timestamp": "2026-11-22T00:00:00Z",
+          "actor": "user_maker_1",
+          "organization_id": "11111111-1111-1111-1111-111111111111",
+          "project_id": "22222222-2222-2222-2222-222222222222",
+          "event_type": "PIPELINE_VERSION_FROZEN",
+          "resource_ref": "pipeline_version:1",
+          "artifact_hash": "sha256:51270f4c86a81678027e2d069f6722f1a477844e9b9e669d0c34744f567ff08c",
+          "payload_digest": "sha256:d8560b7658c792bdded69837b055e2ed54708be6123b7bb4cc9fadf261ea091f"
+        },
+        "previous_hash": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+        "expected_event_hash": "sha256:1cc1ec79c49025e0232922c344264745c64f3e2d58091fb7d7b03de0eb172af2"
+      },
+      {
+        "event": {
+          "event_id": "00000000-0000-0000-0000-000000000002",
+          "sequence_no": 2,
+          "timestamp": "2026-11-22T00:01:00Z",
+          "actor": "user_operator_1",
+          "organization_id": "11111111-1111-1111-1111-111111111111",
+          "project_id": "22222222-2222-2222-2222-222222222222",
+          "event_type": "EXECUTION_COMMITTED",
+          "resource_ref": "execution:1",
+          "artifact_hash": "sha256:51270f4c86a81678027e2d069f6722f1a477844e9b9e669d0c34744f567ff08c",
+          "payload_digest": "sha256:4b8bebd1316799f117a949421e01968e6e0367f7fd87a1b708073fb816ccecde"
+        },
+        "previous_hash": "sha256:1cc1ec79c49025e0232922c344264745c64f3e2d58091fb7d7b03de0eb172af2",
+        "expected_event_hash": "sha256:285abd7c2e39f636ff24a1650e02aac998eb45998c8911e3e6404118933834ba"
+      }
+    ]
+  }
+}

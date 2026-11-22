@@ -1,0 +1,88 @@
+contract_version: "1.0.0"
+owner: "Lead / Architect (Platform verifies pull/runtime in M1; Data verifies connector JARs in M7/M8)"
+host_runtime:
+  os: "Windows 11 Pro (10.0.26300)"
+  shell: "Windows PowerShell 5.1"
+  container_engine: "Kiri Engine 0.2.2 (Docker Client 29.9.2 / Engine API 1.47 / linux/amd64 / Compose v5.6.1)"
+  python: "3.12.9"
+  node: "26.13.1"
+  pnpm: "9.12.3"
+
+containers:
+  postgres:
+    image: "postgres:16-alpine"
+    status: "TARGET_LOCKED"
+    notes: "Control plane DB (RLS + Checkpoints + Outbox + Evidence)"
+  redis:
+    image: "redis:7-alpine"
+    status: "TARGET_LOCKED"
+  vault:
+    image: "hashicorp/vault:1.18"
+    status: "MANIFEST_VERIFIED"
+    notes: "Persistent file storage default; KV v2 + Transit Ed25519"
+  minio:
+    image: "minio/minio:RELEASE.2024-12-18T13-15-44Z"
+    status: "TARGET_LOCKED"
+  mailpit:
+    image: "axllent/mailpit:v1.21"
+    status: "TARGET_LOCKED"
+    notes: "Local SMTP capture for Email OTP (邮件二次验证)"
+  demo_mysql:
+    image: "mysql:8.0"
+    status: "TARGET_LOCKED"
+    notes: "Binlog ROW mode enabled for M7 Batch & M8 MySQL CDC"
+  demo_postgres:
+    image: "postgres:16-alpine"
+    status: "TARGET_LOCKED"
+    notes: "wal_level=logical enabled for M8 PG CDC"
+  seatunnel_zeta:
+    image: "apache/seatunnel:2.3.9"
+    status: "MANIFEST_VERIFIED"
+    notes: "Single-node Zeta cluster default; ha-seatunnel profile for multi-node"
+  doris_fe:
+    image: "apache/doris:fe-2.1.7"
+    status: "TARGET_LOCKED"
+  doris_be:
+    image: "apache/doris:be-2.1.7"
+    status: "TARGET_LOCKED"
+  prometheus:
+    image: "prom/prometheus:v2.55.1"
+    status: "TARGET_LOCKED"
+  grafana:
+    image: "grafana/grafana:11.4.0"
+    status: "TARGET_LOCKED"
+  loki:
+    image: "grafana/loki:3.3.2"
+    status: "TARGET_LOCKED"
+  tempo:
+    image: "grafana/tempo:2.6.1"
+    status: "TARGET_LOCKED"
+  otel_collector:
+    image: "otel/opentelemetry-collector-contrib:0.116.1"
+    status: "TARGET_LOCKED"
+
+python_packages_target:
+  fastapi: ">=0.115,<1.0"
+  uvicorn: ">=0.32,<1.0"
+  sqlalchemy: ">=2.0.35,<2.1"
+  psycopg: ">=3.2,<4.0"
+  alembic: ">=1.14,<2.0"
+  pydantic: ">=2.10,<3.0"
+  pydantic_settings: ">=2.6,<3.0"
+  celery: ">=5.4,<6.0"
+  redis: ">=5.2,<6.0"
+  cryptography: ">=44.0,<46.0"
+  pyjwt: ">=2.10,<3.0"
+  sqlglot: ">=26.0,<27.0"
+  pyhocon: ">=0.3.61,<0.4"
+  httpx: ">=0.28,<1.0"
+  langgraph: ">=0.2.60,<1.0"
+  langgraph_checkpoint_postgres: ">=2.0,<3.0"
+  langchain_openai: ">=0.3,<1.0"
+  pymysql: ">=1.1,<2.0"
+  boto3: ">=1.35,<2.0"
+  opentelemetry_api: ">=1.29,<2.0"
+  opentelemetry_sdk: ">=1.29,<2.0"
+  opentelemetry_exporter_otlp: ">=1.29,<2.0"
+  prometheus_client: ">=0.21,<1.0"
+  pytest: ">=8.3,<9.0"

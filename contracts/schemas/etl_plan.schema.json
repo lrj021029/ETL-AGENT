@@ -1,0 +1,124 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://etl-agent.local/contracts/schemas/etl_plan.schema.json",
+  "title": "EtlPlanDSL",
+  "description": "Versioned structured ETL Plan DSL (Contract v1.0.0). Never contains plaintext secrets.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "plan_name",
+    "sync_mode",
+    "source",
+    "sink",
+    "field_mappings",
+    "transformations",
+    "publish_strategy"
+  ],
+  "properties": {
+    "schema_version": { "type": "string", "const": "1.0.0" },
+    "plan_name": { "type": "string", "minLength": 1, "maxLength": 128 },
+    "description": { "type": "string", "maxLength": 2000 },
+    "sync_mode": { "type": "string", "enum": ["FULL_LOAD", "INCREMENTAL", "CDC"] },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["connection_id", "connection_version", "connector_id", "metadata_snapshot_id", "objects"],
+      "properties": {
+        "connection_id": { "type": "string", "format": "uuid" },
+        "connection_version": { "type": "integer", "minimum": 1 },
+        "connector_id": { "type": "string", "minLength": 1 },
+        "metadata_snapshot_id": { "type": "string", "format": "uuid" },
+        "objects": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["schema_name", "table_name"],
+            "properties": {
+              "schema_name": { "type": "string", "minLength": 1 },
+              "table_name": { "type": "string", "minLength": 1 },
+              "alias": { "type": "string" },
+              "primary_keys": { "type": "array", "items": { "type": "string" } },
+              "incremental_column": { "type": ["string", "null"] },
+              "filter_predicate": { "type": ["string", "null"] }
+            }
+          }
+        }
+      }
+    },
+    "sink": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["connection_id", "connection_version", "connector_id", "target_schema", "target_table", "write_mode"],
+      "properties": {
+        "connection_id": { "type": "string", "format": "uuid" },
+        "connection_version": { "type": "integer", "minimum": 1 },
+        "connector_id": { "type": "string", "minLength": 1 },
+        "metadata_snapshot_id": { "type": ["string", "null"], "format": "uuid" },
+        "target_schema": { "type": "string", "minLength": 1 },
+        "target_table": { "type": "string", "minLength": 1 },
+        "write_mode": { "type": "string", "enum": ["SHADOW_SWAP", "APPEND", "UPSERT"] },
+        "primary_keys": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "field_mappings": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["source_field", "target_field", "target_type"],
+        "properties": {
+          "source_object": { "type": "string" },
+          "source_field": { "type": "string", "minLength": 1 },
+          "target_field": { "type": "string", "minLength": 1 },
+          "target_type": { "type": "string", "minLength": 1 },
+          "nullable": { "type": "boolean", "default": true },
+          "transform_expr": { "type": ["string", "null"] },
+          "masking_policy": { "type": ["string", "null"], "enum": [null, "NONE", "HASH_SHA256", "MASK_PARTIAL", "REDACT"] }
+        }
+      }
+    },
+    "transformations": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["step_id", "kind", "sql_dialect", "sql_text"],
+        "properties": {
+          "step_id": { "type": "string", "minLength": 1 },
+          "kind": { "type": "string", "enum": ["SELECT_SQL", "FIELD_MAPPER", "FILTER", "DEDUP"] },
+          "sql_dialect": { "type": "string", "enum": ["mysql", "postgres", "doris", "seatunnel"] },
+          "sql_text": { "type": "string", "minLength": 1 },
+          "resolved_execution_strategy": { "type": ["string", "null"], "enum": [null, "SOURCE_PUSHDOWN", "SEATUNNEL_TRANSFORM", "TARGET_SIDE_SQL"] },
+          "strategy_reason_codes": { "type": "array", "items": { "type": "string" } }
+        }
+      }
+    },
+    "publish_strategy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["adapter", "require_schema_compat_gate", "retain_previous_version"],
+      "properties": {
+        "adapter": { "type": "string", "enum": ["DORIS_ATOMIC_SWAP", "STAGING_INSERT", "CDC_STREAMING_UPSERT"] },
+        "require_schema_compat_gate": { "type": "boolean", "const": true },
+        "retain_previous_version": { "type": "boolean", "default": true }
+      }
+    },
+    "secret_refs": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["placeholder", "secret_ref_id", "secret_version"],
+        "properties": {
+          "placeholder": { "type": "string", "pattern": "^\\$\\{SECRET:[A-Z0-9_]+\\}$" },
+          "secret_ref_id": { "type": "string", "format": "uuid" },
+          "secret_version": { "type": "integer", "minimum": 1 }
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,61 @@
+contract_version: "1.0.0"
+owner: "Lead / Architect"
+description: "Stable API and domain error code registry. Every API error returns {error_code, message, detail, trace_id}."
+
+errors:
+  # Auth & IAM
+  AUTH_INVALID_CREDENTIALS: { http_status: 401, category: "auth" }
+  AUTH_TOKEN_EXPIRED: { http_status: 401, category: "auth" }
+  AUTH_REFRESH_REUSE_DETECTED: { http_status: 401, category: "security" }
+  AUTH_OTP_REQUIRED: { http_status: 403, category: "auth" }
+  AUTH_OTP_INVALID_OR_EXPIRED: { http_status: 400, category: "auth" }
+  TENANT_CONTEXT_MISSING: { http_status: 403, category: "rls" }
+  TENANT_ACCESS_DENIED: { http_status: 403, category: "iam" }
+  PERMISSION_DENIED: { http_status: 403, category: "rbac_abac" }
+  SYSTEM_ROLE_IMMUTABLE: { http_status: 409, category: "iam" }
+  SOD_VIOLATION: { http_status: 403, category: "security" }
+
+  # Connections / Metadata / Files / Secrets
+  CONNECTION_TEST_FAILED: { http_status: 400, category: "connection" }
+  SECRET_PROVIDER_ERROR: { http_status: 502, category: "secret" }
+  METADATA_PROBE_FAILED: { http_status: 502, category: "metadata" }
+  FILE_PATH_TRAVERSAL_BLOCKED: { http_status: 403, category: "security" }
+  CONNECTOR_CAPABILITY_UNSUPPORTED: { http_status: 422, category: "connector" }
+
+  # Pipeline / Compiler / SQL Gate / Agent
+  DSL_SCHEMA_INVALID: { http_status: 422, category: "compiler" }
+  SQL_AST_POLICY_VIOLATION: { http_status: 422, category: "security" }
+  HOCON_VALIDATION_FAILED: { http_status: 422, category: "compiler" }
+  DETERMINISTIC_GATE_FAILED: { http_status: 422, category: "gate" }
+  REPAIR_LOOP_EXHAUSTED: { http_status: 422, category: "agent" }
+  AGENT_TOOL_FORBIDDEN: { http_status: 403, category: "security" }
+  LLM_PROVIDER_UNAVAILABLE: { http_status: 502, category: "agent" }
+
+  # Harness / PDP / Approval / Capability / Replay
+  PDP_DENIED_P0: { http_status: 403, category: "harness" }
+  PREPARATION_INVALIDATED: { http_status: 409, category: "harness" }
+  PREPARATION_EXPIRED: { http_status: 409, category: "harness" }
+  APPROVAL_SELF_APPROVE_FORBIDDEN: { http_status: 403, category: "security" }
+  APPROVAL_SLOT_CONFLICT: { http_status: 403, category: "security" }
+  APPROVAL_INCOMPLETE: { http_status: 409, category: "harness" }
+  CAPABILITY_INVALID_SIGNATURE: { http_status: 403, category: "security" }
+  CAPABILITY_EXPIRED: { http_status: 403, category: "security" }
+  CAPABILITY_REPLAY_DETECTED: { http_status: 409, category: "security" }
+  IDEMPOTENCY_CONFLICT: { http_status: 409, category: "api" }
+
+  # Execution / Supervision / Publish / Rollback / CDC
+  STATE_TRANSITION_INVALID: { http_status: 409, category: "execution" }
+  SEATUNNEL_SUBMIT_UNKNOWN: { http_status: 202, category: "execution" }
+  SUPERVISION_THRESHOLD_BREACHED: { http_status: 422, category: "supervision" }
+  PUBLISH_SCHEMA_INCOMPATIBLE: { http_status: 422, category: "publish" }
+  CDC_RECOVERY_OPERATOR_CONFIRM_REQUIRED: { http_status: 409, category: "cdc" }
+  EVIDENCE_CHAIN_TAMPER_DETECTED: { http_status: 500, category: "security" }
+
+  # Quality Rules (Data plane row-level error codes)
+  DQ_NOT_NULL_VIOLATION: { http_status: 422, category: "quality" }
+  DQ_DATA_TYPE_VIOLATION: { http_status: 422, category: "quality" }
+  DQ_REGEX_VIOLATION: { http_status: 422, category: "quality" }
+  DQ_RANGE_VIOLATION: { http_status: 422, category: "quality" }
+  DQ_UNIQUE_VIOLATION: { http_status: 422, category: "quality" }
+  DQ_ENUM_VIOLATION: { http_status: 422, category: "quality" }
+  DQ_RESTRICTED_SQL_VIOLATION: { http_status: 422, category: "quality" }

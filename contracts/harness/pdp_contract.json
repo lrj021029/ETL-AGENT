@@ -1,0 +1,86 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://etl-agent.local/contracts/harness/pdp_contract.json",
+  "title": "PDPContract",
+  "description": "Policy Decision Point (RBAC + ABAC) input and output contract v1.0.0.",
+  "type": "object",
+  "$defs": {
+    "PdpRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "subject",
+        "organization_id",
+        "project_id",
+        "action",
+        "resource",
+        "environment",
+        "data_classification",
+        "risk_level",
+        "artifact_hash",
+        "approval_context"
+      ],
+      "properties": {
+        "subject": {
+          "type": "object",
+          "required": ["user_id", "org_role", "project_roles", "permissions"],
+          "properties": {
+            "user_id": { "type": "string" },
+            "org_role": { "type": "string" },
+            "project_roles": { "type": "array", "items": { "type": "string" } },
+            "permissions": { "type": "array", "items": { "type": "string" } },
+            "is_system_principal": { "type": "boolean", "default": false }
+          }
+        },
+        "organization_id": { "type": "string", "format": "uuid" },
+        "project_id": { "type": "string", "format": "uuid" },
+        "action": { "type": "string" },
+        "resource": {
+          "type": "object",
+          "required": ["resource_type", "resource_id"],
+          "properties": {
+            "resource_type": { "type": "string" },
+            "resource_id": { "type": "string" },
+            "target_scope": { "type": "array", "items": { "type": "string" } }
+          }
+        },
+        "environment": { "type": "string", "enum": ["dev", "staging", "prod"] },
+        "data_classification": { "type": "string", "enum": ["PUBLIC", "INTERNAL", "CONFIDENTIAL", "RESTRICTED_PII"] },
+        "risk_level": { "type": ["string", "null"], "enum": [null, "P0", "P1", "P2", "P3"] },
+        "artifact_hash": { "type": ["string", "null"] },
+        "approval_context": {
+          "type": "object",
+          "properties": {
+            "maker_id": { "type": ["string", "null"] },
+            "preparation_id": { "type": ["string", "null"] },
+            "existing_approvers": { "type": "object" },
+            "approval_digest": { "type": ["string", "null"] }
+          }
+        }
+      }
+    },
+    "PdpResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "decision",
+        "risk_level",
+        "required_approval_slots",
+        "constraints",
+        "reason_codes",
+        "policy_version"
+      ],
+      "properties": {
+        "decision": { "type": "string", "enum": ["ALLOW", "DENY", "REQUIRE_APPROVAL"] },
+        "risk_level": { "type": "string", "enum": ["P0", "P1", "P2", "P3"] },
+        "required_approval_slots": {
+          "type": "array",
+          "items": { "type": "string", "enum": ["DATA_CHECKER", "SECURITY_CHECKER", "SINGLE_CHECKER", "AUTO_P3"] }
+        },
+        "constraints": { "type": "object" },
+        "reason_codes": { "type": "array", "items": { "type": "string" } },
+        "policy_version": { "type": "string", "minLength": 1 }
+      }
+    }
+  }
+}
