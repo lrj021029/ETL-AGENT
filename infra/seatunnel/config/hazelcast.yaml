@@ -1,0 +1,31 @@
+# =============================================================================
+# Apache SeaTunnel 2.3.9 Hazelcast 集群网络配置 (infra/seatunnel/config/hazelcast.yaml)
+# 默认启动单节点 Zeta (seatunnel-zeta)，并兼容 ha-seatunnel Profile 扩展节点加入
+# =============================================================================
+
+hazelcast:
+  cluster-name: etl-agent-zeta
+  network:
+    rest-api:
+      enabled: true
+      endpoint-groups:
+        CLUSTER_WRITE:
+          enabled: true
+        DATA:
+          enabled: true
+        HEALTH_CHECK:
+          enabled: true
+    join:
+      tcp-ip:
+        enabled: true
+        member-list:
+          - seatunnel-zeta
+          - seatunnel-zeta-worker
+    port:
+      auto-increment: false
+      port: 5801
+  properties:
+    hazelcast.invocation.max.retry.count: 20
+    hazelcast.tcp.join.port.try.count: 30
+    hazelcast.logging.type: log4j2
+    hazelcast.operation.generic.thread.count: 16

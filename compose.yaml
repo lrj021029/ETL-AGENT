@@ -1,0 +1,759 @@
+# ==============================================================================
+# ETL-Agent 平台 — 统一 Docker Compose 拓扑定义 (compose.yaml)
+# ==============================================================================
+# 架构规范依据：
+#   - ADR-001: 单一 compose.yaml 默认启动全部核心服务、数据面演示服务与可观测性全栈；
+#              Vault 默认采用持久化文件存储模式（挂载 infra/vault/config/vault.hcl 与 vault_data 卷）。
+#   - ADR-002: 控制面 PostgreSQL 初始化三类物理分离角色（etl_migrator / etl_runtime / etl_outbox_dispatcher）。
+#   - 安全约束: 所有暴漏到宿主机的端口严格绑定至回环地址 127.0.0.1，严禁直接暴露到公网网卡。
+#   - 资源与日志: 所有服务配置 mem_limit、cpus、healthcheck、restart 策略及 json-file 日志轮转。
+# ==============================================================================
+
+name: etl-agent
+
+x-logging-defaults: &default-logging
+  driver: "json-file"
+  options:
+    max-size: "20m"
+    max-file: "3"
+
+x-backend-common-env: &backend-common-env
+  APP_ENV: ${APP_ENV:-local}
+  LOG_LEVEL: ${LOG_LEVEL:-INFO}
+  REDIS_URL: ${REDIS_URL:-redis://:dev_only_redis_placeholder_not_for_prod@redis:6379/0}
+  CELERY_BROKER_URL: ${CELERY_BROKER_URL:-redis://:dev_only_redis_placeholder_not_for_prod@redis:6379/1}
+  CELERY_RESULT_BACKEND: ${CELERY_RESULT_BACKEND:-redis://:dev_only_redis_placeholder_not_for_prod@redis:6379/2}
+  VAULT_ADDR: ${VAULT_ADDR:-http://vault:8200}
+  VAULT_KV_MOUNT: ${VAULT_KV_MOUNT:-secret}
+  VAULT_TRANSIT_MOUNT: ${VAULT_TRANSIT_MOUNT:-transit}
+  VAULT_CAPABILITY_KEY_NAME: ${VAULT_CAPABILITY_KEY_NAME:-etl-agent-capability}
+  VAULT_EVIDENCE_KEY_NAME: ${VAULT_EVIDENCE_KEY_NAME:-etl-agent-evidence}
+  VAULT_TOKEN: ${VAULT_TOKEN:-dev_only_vault_token_placeholder_load_from_init}
+  SECRET_PROVIDER_FALLBACK_KEY: ${SECRET_PROVIDER_FALLBACK_KEY:-dev_only_32byte_fernet_fallback_placeholder=}
+  JWT_SECRET_KEY: ${JWT_SECRET_KEY:-dev_only_jwt_hmac_placeholder_change_in_deployment}
+  JWT_ACCESS_TTL_SECONDS: ${JWT_ACCESS_TTL_SECONDS:-900}
+  JWT_REFRESH_TTL_SECONDS: ${JWT_REFRESH_TTL_SECONDS:-604800}
+  SMTP_HOST: ${SMTP_HOST:-mailpit}
+  SMTP_PORT: ${SMTP_PORT:-1025}
+  SMTP_FROM_EMAIL: ${SMTP_FROM_EMAIL:-noreply@etl-agent.local}
+  EMAIL_OTP_TTL_SECONDS: ${EMAIL_OTP_TTL_SECONDS:-300}
+  MINIO_ENDPOINT: ${MINIO_ENDPOINT:-http://minio:9000}
+  MINIO_ROOT_USER: ${MINIO_ROOT_USER:-etl_minio_admin}
+  MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-dev_only_minio_placeholder_not_for_prod}
+  MINIO_DEFAULT_BUCKET: ${MINIO_DEFAULT_BUCKET:-etl-agent-artifacts}
+  SEATUNNEL_ZETA_REST_URL: ${SEATUNNEL_ZETA_REST_URL:-http://seatunnel-zeta:5801}
+  LLM_PROVIDER_MODE: ${LLM_PROVIDER_MODE:-deterministic_mock}
+  LLM_OPENAI_BASE_URL: ${LLM_OPENAI_BASE_URL:-https://api.openai.com/v1}
+  LLM_OPENAI_MODEL: ${LLM_OPENAI_MODEL:-gpt-4o-mini}
+  LLM_OPENAI_API_KEY_SECRET_REF: ${LLM_OPENAI_API_KEY_SECRET_REF:-secret/data/llm/openai_api_key}
+  OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://otel-collector:4317}
+  OTEL_SERVICE_NAME: ${OTEL_SERVICE_NAME:-etl-agent-control-plane}
+  POLICY_REJECT_RATE_THRESHOLD: ${POLICY_REJECT_RATE_THRESHOLD:-0.20}
+  POLICY_REJECT_RATE_MIN_VALIDATED_ROWS: ${POLICY_REJECT_RATE_MIN_VALIDATED_ROWS:-100}
+  POLICY_REJECT_RATE_WINDOW_SECONDS: ${POLICY_REJECT_RATE_WINDOW_SECONDS:-60}
+  POLICY_MAX_ERROR_ROWS_ABSOLUTE: ${POLICY_MAX_ERROR_ROWS_ABSOLUTE:-50000}
+  POLICY_MAX_REPAIR_ATTEMPTS: ${POLICY_MAX_REPAIR_ATTEMPTS:-3}
+  POLICY_MAX_SQL_EXECUTION_SECONDS: ${POLICY_MAX_SQL_EXECUTION_SECONDS:-120}
+
+services:
+  # ============================================================================
+  # 一、控制面与前端工作台 (Control Plane & UI - 默认全部启动)
+  # ============================================================================
+
+  frontend:
+    build:
+      context: .
+      dockerfile: docker/frontend.Dockerfile
+    container_name: etl-agent-frontend
+    restart: unless-stopped
+    environment:
+      VITE_API_BASE_URL: ${VITE_API_BASE_URL:-http://127.0.0.1:8000}
+    ports:
+      - "127.0.0.1:${FRONTEND_PORT:-5173}:5173"
+    volumes:
+      - frontend_cache:/app/.vite
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:5173/ >/dev/null || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    mem_limit: 512m
+    cpus: 1.0
+    networks:
+      - etl-internal
+    logging: *default-logging
+
+  api:
+    build:
+      context: .
+      dockerfile: docker/backend.Dockerfile
+    container_name: etl-agent-api
+    restart: unless-stopped
+    environment:
+      <<: *backend-common-env
+      DATABASE_RUNTIME_URL: ${DATABASE_RUNTIME_URL:-postgresql+psycopg://etl_runtime:dev_only_runtime_placeholder_not_for_prod@postgres:5432/etl_control_plane}
+      DATABASE_MIGRATOR_URL: ${DATABASE_MIGRATOR_URL:-postgresql+psycopg://etl_migrator:dev_only_migrator_placeholder_not_for_prod@postgres:5432/etl_control_plane}
+    ports:
+      - "127.0.0.1:${API_PORT:-8000}:8000"
+    volumes:
+      - backend_uploads:/workspace/data/uploads
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      vault:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      mailpit:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8000/health >/dev/null || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    mem_limit: 768m
+    cpus: 1.5
+    networks:
+      - etl-internal
+    logging: *default-logging
+
+  celery-worker:
+    build:
+      context: .
+      dockerfile: docker/backend.Dockerfile
+    container_name: etl-agent-celery-worker
+    command: ["celery", "-A", "workers.celery_app", "worker", "--loglevel=info", "--concurrency=2"]
+    restart: unless-stopped
+    environment:
+      <<: *backend-common-env
+      # Worker 严格使用 NOBYPASSRLS 的 etl_runtime 角色，通过受控函数派生事务级 RLS 上下文
+      DATABASE_RUNTIME_URL: ${DATABASE_RUNTIME_URL:-postgresql+psycopg://etl_runtime:dev_only_runtime_placeholder_not_for_prod@postgres:5432/etl_control_plane}
+    volumes:
+      - backend_uploads:/workspace/data/uploads
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      vault:
+        condition: service_healthy
+      seatunnel-zeta:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import os, redis; r = redis.from_url(os.environ['CELERY_BROKER_URL']); r.ping()\" || exit 1"]
+      interval: 20s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    mem_limit: 768m
+    cpus: 1.5
+    networks:
+      - etl-internal
+    logging: *default-logging
+
+  celery-beat:
+    build:
+      context: .
+      dockerfile: docker/backend.Dockerfile
+    container_name: etl-agent-celery-beat
+    command: ["celery", "-A", "workers.celery_app", "beat", "--loglevel=info", "-s", "/tmp/celerybeat-schedule"]
+    restart: unless-stopped
+    environment:
+      <<: *backend-common-env
+      DATABASE_RUNTIME_URL: ${DATABASE_RUNTIME_URL:-postgresql+psycopg://etl_runtime:dev_only_runtime_placeholder_not_for_prod@postgres:5432/etl_control_plane}
+    volumes:
+      - celery_beat_data:/tmp
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import os, redis; r = redis.from_url(os.environ['CELERY_BROKER_URL']); r.ping()\" || exit 1"]
+      interval: 20s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    mem_limit: 384m
+    cpus: 0.5
+    networks:
+      - etl-internal
+    logging: *default-logging
+
+  outbox-dispatcher:
+    build:
+      context: .
+      dockerfile: docker/backend.Dockerfile
+    container_name: etl-agent-outbox-dispatcher
+    command: ["python", "-m", "workers.outbox_dispatcher"]
+    restart: unless-stopped
+    environment:
+      <<: *backend-common-env
+      # Outbox Dispatcher 严格使用最小权限角色 etl_outbox_dispatcher，无任何业务表访问权
+      DATABASE_OUTBOX_URL: ${DATABASE_OUTBOX_URL:-postgresql+psycopg://etl_outbox_dispatcher:dev_only_outbox_placeholder_not_for_prod@postgres:5432/etl_control_plane}
+    volumes:
+      - outbox_dispatcher_state:/tmp
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import os, redis; r = redis.from_url(os.environ['CELERY_BROKER_URL']); r.ping()\" || exit 1"]
+      interval: 20s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    mem_limit: 384m
+    cpus: 0.5
+    networks:
+      - etl-internal
+    logging: *default-logging
+
+  # ============================================================================
+  # 二、核心控制面基础设施 (Core Infrastructure - 默认全部启动)
+  # ============================================================================
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: etl-agent-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-etl_control_plane}
+      POSTGRES_USER: ${POSTGRES_SUPERUSER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_SUPERUSER_PASSWORD:-dev_only_pg_super_placeholder_not_for_prod}
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./infra/databases/postgres/init_roles.sql:/docker-entrypoint-initdb.d/01_init_roles.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_SUPERUSER:-postgres} -d ${POSTGRES_DB:-etl_control_plane} || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 15s
+    mem_limit: 1024m
+    cpus: 1.5
+    networks:
+      - etl-internal
+    logging: *default-logging
+
+  redis:
+    image: redis:7-alpine
+    container_name: etl-agent-redis
+    command:
+      - "redis-server"
+      - "--appendonly"
+      - "yes"
+      - "--requirepass"
+      - "${REDIS_PASSWORD:-dev_only_redis_placeholder_not_for_prod}"
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a \"${REDIS_PASSWORD:-dev_only_redis_placeholder_not_for_prod}\" ping | grep -q PONG || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    mem_limit: 512m
+    cpus: 1.0
+    networks:
+      - etl-internal
+    logging: *default-logging
+
+  vault:
+    image: hashicorp/vault:1.18
+    container_name: etl-agent-vault
+    command: ["vault", "server", "-config=/vault/config/vault.hcl"]
+    restart: unless-stopped
+    cap_add:
+      - IPC_LOCK
+    environment:
+      VAULT_ADDR: "http://127.0.0.1:8200"
+      VAULT_API_ADDR: "http://vault:8200"
+    ports:
+      - "127.0.0.1:${VAULT_PORT:-8200}:8200"
+    volumes:
+      - ./infra/vault/config/vault.hcl:/vault/config/vault.hcl:ro
+      - vault_data:/vault/file
+    healthcheck:
+      # 持久化 Vault 启动后可能处于已初始化待 Unseal (503) 或首次待初始化 (501) 或已就绪 (200)
+      # HTTP 接口可达即表明 Vault 守护进程存活，随后由 scripts/dev/init-vault.ps1 完成幂等初始化与 Unseal
+      test: ["CMD-SHELL", "vault status -address=http://127.0.0.1:8200 >/dev/null 2>&1; code=$$?; [ $$code -eq 0 ] || [ $$code -eq 2 ] || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 10s
+    mem_limit: 512m
+    cpus: 1.0
+    networks:
+      - etl-internal
+    logging: *default-logging
+
+  minio:
+    image: minio/minio:RELEASE.2024-12-18T13-15-44Z
+    container_name: etl-agent-minio
+    command: ["server", "/data", "--console-address", ":9001"]
+    restart: unless-stopped
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-etl_minio_admin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-dev_only_minio_placeholder_not_for_prod}
+    ports:
+      - "127.0.0.1:${MINIO_API_PORT:-9000}:9000"
+      - "127.0.0.1:${MINIO_CONSOLE_PORT:-9001}:9001"
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:9000/minio/health/live >/dev/null || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    mem_limit: 512m
+    cpus: 1.0
+    networks:
+      - etl-internal
+    logging: *default-logging
+
+  mailpit:
+    image: axllent/mailpit:v1.21
+    container_name: etl-agent-mailpit
+    restart: unless-stopped
+    environment:
+      MP_MAX_MESSAGES: 500
+      MP_DATABASE: /data/mailpit.db
+      MP_SMTP_AUTH_ACCEPT_ANY: 1
+      MP_SMTP_AUTH_ALLOW_INSECURE: 1
+    ports:
+      - "127.0.0.1:${MAILPIT_SMTP_PORT:-1025}:1025"
+      - "127.0.0.1:${MAILPIT_UI_PORT:-8025}:8025"
+    volumes:
+      - mailpit_data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8025/livez >/dev/null 2>&1 || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    mem_limit: 256m
+    cpus: 0.5
+    networks:
+      - etl-internal
+    logging: *default-logging
+
+  # ============================================================================
+  # 三、数据面执行引擎与真实演示数据库 (Data Plane - 默认全部启动)
+  # ============================================================================
+
+  seatunnel-zeta:
+    image: apache/seatunnel:2.3.9
+    container_name: etl-agent-seatunnel-zeta
+    command: ["/bin/sh", "-c", "/opt/seatunnel/bin/seatunnel-cluster.sh -d && tail -F /opt/seatunnel/logs/seatunnel-engine-server.log"]
+    restart: unless-stopped
+    environment:
+      SEATUNNEL_HOME: /opt/seatunnel
+      JAVA_OPTS: "-Xms${SEATUNNEL_JVM_XMS:-512m} -Xmx${SEATUNNEL_JVM_XMX:-1536m} -XX:+UseG1GC"
+    ports:
+      - "127.0.0.1:${SEATUNNEL_REST_PORT:-5801}:5801"
+    volumes:
+      - ./infra/seatunnel/config/seatunnel.yaml:/opt/seatunnel/config/seatunnel.yaml:ro
+      - ./infra/seatunnel/config/hazelcast.yaml:/opt/seatunnel/config/hazelcast.yaml:ro
+      - ./infra/seatunnel/scripts/install-connectors.sh:/opt/seatunnel/bin/install-connectors.sh:ro
+      - seatunnel_data:/data/seatunnel
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:5801/hazelcast/rest/maps/overview >/dev/null 2>&1 || curl -fsS http://127.0.0.1:5801/overview >/dev/null 2>&1 || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 8
+      start_period: 30s
+    mem_limit: 2048m
+    cpus: 2.0
+    networks:
+      - etl-internal
+    logging: *default-logging
+
+  demo-mysql:
+    image: mysql:8.0
+    container_name: etl-agent-demo-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${DEMO_MYSQL_ROOT_PASSWORD:-dev_only_demo_mysql_root_placeholder}
+      MYSQL_DATABASE: ${DEMO_MYSQL_DATABASE:-demo_ecommerce}
+      MYSQL_USER: ${DEMO_MYSQL_USER:-demo_etl_reader}
+      MYSQL_PASSWORD: ${DEMO_MYSQL_PASSWORD:-dev_only_demo_mysql_reader_placeholder}
+    ports:
+      - "127.0.0.1:${DEMO_MYSQL_PORT:-3306}:3306"
+    volumes:
+      - ./infra/databases/mysql/my.cnf:/etc/mysql/conf.d/cdc.cnf:ro
+      - ./infra/databases/mysql/init_demo.sql:/docker-entrypoint-initdb.d/01_init_demo.sql:ro
+      - demo_mysql_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -u root -p\"${DEMO_MYSQL_ROOT_PASSWORD:-dev_only_demo_mysql_root_placeholder}\" --silent || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 8
+      start_period: 30s
+    mem_limit: 1024m
+    cpus: 1.5
+    networks:
+      - etl-internal
+    logging: *default-logging
+
+  demo-postgres:
+    image: postgres:16-alpine
+    container_name: etl-agent-demo-postgres
+    command:
+      - "postgres"
+      - "-c"
+      - "wal_level=logical"
+      - "-c"
+      - "max_replication_slots=10"
+      - "-c"
+      - "max_wal_senders=10"
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${DEMO_POSTGRES_DB:-demo_orders}
+      POSTGRES_USER: ${DEMO_POSTGRES_USER:-demo_pg_user}
+      POSTGRES_PASSWORD: ${DEMO_POSTGRES_PASSWORD:-dev_only_demo_pg_placeholder}
+    ports:
+      - "127.0.0.1:${DEMO_POSTGRES_PORT:-5433}:5432"
+    volumes:
+      - ./infra/databases/demo-postgres/init_demo_pg.sql:/docker-entrypoint-initdb.d/01_init_demo_pg.sql:ro
+      - demo_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DEMO_POSTGRES_USER:-demo_pg_user} -d ${DEMO_POSTGRES_DB:-demo_orders} || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 15s
+    mem_limit: 512m
+    cpus: 1.0
+    networks:
+      - etl-internal
+    logging: *default-logging
+
+  doris-fe:
+    image: apache/doris:fe-2.1.7
+    container_name: etl-agent-doris-fe
+    hostname: doris-fe
+    restart: unless-stopped
+    environment:
+      FE_SERVERS: "fe1:127.0.0.1:9010"
+      FE_ID: 1
+      JAVA_OPTS: "-Dfile.encoding=UTF-8 -Xms1024m -Xmx${DORIS_FE_JVM_XMX:-2048m} -XX:+UseG1GC"
+    ports:
+      - "127.0.0.1:${DORIS_FE_HTTP_PORT:-8030}:8030"
+      - "127.0.0.1:${DORIS_FE_QUERY_PORT:-9030}:9030"
+    volumes:
+      - ./infra/doris/fe/custom_fe.conf:/opt/apache-doris/fe/conf/custom_fe.conf:ro
+      - ./infra/doris/init/init_warehouse.sql:/docker-entrypoint-initdb.d/01_init_warehouse.sql:ro
+      - doris_fe_meta:/opt/apache-doris/fe/doris-meta
+      - doris_fe_log:/opt/apache-doris/fe/log
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8030/api/bootstrap >/dev/null || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 45s
+    mem_limit: 2560m
+    cpus: 2.0
+    networks:
+      - etl-internal
+    logging: *default-logging
+
+  doris-be:
+    image: apache/doris:be-2.1.7
+    container_name: etl-agent-doris-be
+    hostname: doris-be
+    restart: unless-stopped
+    environment:
+      FE_SERVERS: "fe1:doris-fe:9010"
+      BE_ADDR: "doris-be:9050"
+    ports:
+      - "127.0.0.1:${DORIS_BE_WEBSERVER_PORT:-8040}:8040"
+    volumes:
+      - ./infra/doris/be/custom_be.conf:/opt/apache-doris/be/conf/custom_be.conf:ro
+      - doris_be_storage:/opt/apache-doris/be/storage
+      - doris_be_log:/opt/apache-doris/be/log
+    depends_on:
+      doris-fe:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8040/api/health >/dev/null || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 45s
+    mem_limit: 4096m
+    cpus: 2.0
+    networks:
+      - etl-internal
+    logging: *default-logging
+
+  # ============================================================================
+  # 四、可观测性全栈 (Observability Stack - 默认全部启动)
+  # ============================================================================
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.116.1
+    container_name: etl-agent-otel-collector
+    command: ["--config=/etc/otelcol-contrib/config.yaml"]
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${OTEL_GRPC_PORT:-4317}:4317"
+      - "127.0.0.1:${OTEL_HTTP_PORT:-4318}:4318"
+    volumes:
+      - ./observability/otel/otel-collector-config.yaml:/etc/otelcol-contrib/config.yaml:ro
+      - otel_data:/var/lib/otelcol
+    depends_on:
+      loki:
+        condition: service_healthy
+      tempo:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:13133/ >/dev/null 2>&1 || exit 0"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    mem_limit: 512m
+    cpus: 1.0
+    networks:
+      - etl-internal
+    logging: *default-logging
+
+  prometheus:
+    image: prom/prometheus:v2.55.1
+    container_name: etl-agent-prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--storage.tsdb.retention.time=15d"
+      - "--web.enable-lifecycle"
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${PROMETHEUS_PORT:-9090}:9090"
+    volumes:
+      - ./observability/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:9090/-/healthy >/dev/null 2>&1 || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    mem_limit: 512m
+    cpus: 1.0
+    networks:
+      - etl-internal
+    logging: *default-logging
+
+  loki:
+    image: grafana/loki:3.3.2
+    container_name: etl-agent-loki
+    command: ["-config.file=/etc/loki/local-config.yaml"]
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${LOKI_PORT:-3100}:3100"
+    volumes:
+      - ./observability/loki/loki-config.yaml:/etc/loki/local-config.yaml:ro
+      - loki_data:/loki
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:3100/ready >/dev/null 2>&1 || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    mem_limit: 512m
+    cpus: 1.0
+    networks:
+      - etl-internal
+    logging: *default-logging
+
+  tempo:
+    image: grafana/tempo:2.6.1
+    container_name: etl-agent-tempo
+    command: ["-config.file=/etc/tempo.yaml"]
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${TEMPO_PORT:-3200}:3200"
+    volumes:
+      - ./observability/tempo/tempo-config.yaml:/etc/tempo.yaml:ro
+      - tempo_data:/var/tempo
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:3200/ready >/dev/null 2>&1 || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    mem_limit: 512m
+    cpus: 1.0
+    networks:
+      - etl-internal
+    logging: *default-logging
+
+  grafana:
+    image: grafana/grafana:11.4.0
+    container_name: etl-agent-grafana
+    restart: unless-stopped
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-dev_only_grafana_placeholder_not_for_prod}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_SERVER_HTTP_ADDR: "0.0.0.0"
+    ports:
+      - "127.0.0.1:${GRAFANA_PORT:-3000}:3000"
+    volumes:
+      - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana_data:/var/lib/grafana
+    depends_on:
+      prometheus:
+        condition: service_healthy
+      loki:
+        condition: service_healthy
+      tempo:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:3000/api/health >/dev/null 2>&1 || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    mem_limit: 512m
+    cpus: 1.0
+    networks:
+      - etl-internal
+    logging: *default-logging
+
+  # ============================================================================
+  # 五、可选同文件扩展 Profiles (Optional Extension Profiles per ADR-001)
+  #   - vault-dev      : 快速内存开发模式 Vault（仅在显式指定 --profile vault-dev 时启动）
+  #   - ha-seatunnel   : 多节点 SeaTunnel Zeta Worker 扩展节点
+  #   - ext-clickhouse : 可选重型扩展数据源 ClickHouse
+  # ============================================================================
+
+  vault-dev:
+    image: hashicorp/vault:1.18
+    container_name: etl-agent-vault-dev
+    profiles:
+      - vault-dev
+    restart: unless-stopped
+    environment:
+      VAULT_DEV_ROOT_TOKEN_ID: ${VAULT_DEV_ROOT_TOKEN_ID:-dev_only_vault_ephemeral_profile_token}
+      VAULT_DEV_LISTEN_ADDRESS: "0.0.0.0:8200"
+    ports:
+      - "127.0.0.1:8201:8200"
+    volumes:
+      - vault_dev_data:/vault/file
+    healthcheck:
+      test: ["CMD-SHELL", "vault status -address=http://127.0.0.1:8200 >/dev/null 2>&1 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    mem_limit: 256m
+    cpus: 0.5
+    networks:
+      - etl-internal
+    logging: *default-logging
+
+  seatunnel-zeta-worker:
+    image: apache/seatunnel:2.3.9
+    container_name: etl-agent-seatunnel-zeta-worker
+    profiles:
+      - ha-seatunnel
+    command: ["/bin/sh", "-c", "/opt/seatunnel/bin/seatunnel-cluster.sh -d && tail -F /opt/seatunnel/logs/seatunnel-engine-server.log"]
+    restart: unless-stopped
+    environment:
+      SEATUNNEL_HOME: /opt/seatunnel
+      JAVA_OPTS: "-Xms512m -Xmx1536m -XX:+UseG1GC"
+    ports:
+      - "127.0.0.1:5802:5801"
+    volumes:
+      - ./infra/seatunnel/config/seatunnel.yaml:/opt/seatunnel/config/seatunnel.yaml:ro
+      - ./infra/seatunnel/config/hazelcast.yaml:/opt/seatunnel/config/hazelcast.yaml:ro
+      - seatunnel_worker_data:/data/seatunnel
+    depends_on:
+      seatunnel-zeta:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:5801/hazelcast/rest/maps/overview >/dev/null 2>&1 || curl -fsS http://127.0.0.1:5801/overview >/dev/null 2>&1 || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 8
+      start_period: 30s
+    mem_limit: 2048m
+    cpus: 2.0
+    networks:
+      - etl-internal
+    logging: *default-logging
+
+  ext-clickhouse:
+    image: clickhouse/clickhouse-server:24.8-alpine
+    container_name: etl-agent-ext-clickhouse
+    profiles:
+      - ext-clickhouse
+    restart: unless-stopped
+    environment:
+      CLICKHOUSE_DB: demo_analytics
+      CLICKHOUSE_USER: demo_ck_user
+      CLICKHOUSE_PASSWORD: dev_only_clickhouse_placeholder
+    ports:
+      - "127.0.0.1:8123:8123"
+      - "127.0.0.1:9009:9000"
+    volumes:
+      - ext_clickhouse_data:/var/lib/clickhouse
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8123/ping | grep -q Ok || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    mem_limit: 2048m
+    cpus: 2.0
+    networks:
+      - etl-internal
+    logging: *default-logging
+
+networks:
+  etl-internal:
+    name: etl-internal
+    driver: bridge
+
+volumes:
+  frontend_cache:
+  backend_uploads:
+  celery_beat_data:
+  outbox_dispatcher_state:
+  postgres_data:
+  redis_data:
+  vault_data:
+  vault_dev_data:
+  minio_data:
+  mailpit_data:
+  seatunnel_data:
+  seatunnel_worker_data:
+  demo_mysql_data:
+  demo_postgres_data:
+  doris_fe_meta:
+  doris_fe_log:
+  doris_be_storage:
+  doris_be_log:
+  otel_data:
+  prometheus_data:
+  loki_data:
+  tempo_data:
+  grafana_data:
+  ext_clickhouse_data:

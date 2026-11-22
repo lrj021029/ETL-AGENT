@@ -1,0 +1,33 @@
+# =============================================================================
+# Apache SeaTunnel 2.3.9 Zeta 单节点集群主配置 (infra/seatunnel/config/seatunnel.yaml)
+# 用途：开启 Zeta Engine REST API (端口 5801) 与本地持久化 Checkpoint 存储
+# =============================================================================
+
+seatunnel:
+  engine:
+    history-job-expire-minutes: 1440
+    backup-count: 1
+    queue-type: blockingqueue
+    print-execution-info-interval: 15
+    print-job-metrics-info-interval: 15
+    slot-service:
+      dynamic-slot: true
+    checkpoint:
+      interval: 10000
+      timeout: 60000
+      storage:
+        type: hdfs
+        max-retained: 5
+        plugin-config:
+          namespace: /data/seatunnel/checkpoints
+          storage.type: hdfs
+          fs.defaultFS: file:///
+    http:
+      enable-http: true
+      port: 5801
+      enable-dynamic-port: false
+    telemetry:
+      metric:
+        enabled: true
+      logs:
+        scheduled-deletion-enable: true
