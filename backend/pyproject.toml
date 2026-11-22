@@ -1,0 +1,54 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "etl-agent-backend"
+version = "1.0.0"
+description = "Production-grade ETL-Agent Data Integration Control Plane Backend"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.115,<1.0",
+    "uvicorn[standard]>=0.32,<1.0",
+    "sqlalchemy>=2.0.35,<2.1",
+    "psycopg[binary]>=3.2,<4.0",
+    "alembic>=1.14,<2.0",
+    "pydantic>=2.10,<3.0",
+    "pydantic-settings>=2.6,<3.0",
+    "celery>=5.4,<6.0",
+    "redis>=5.2,<6.0",
+    "cryptography>=44.0,<51.0",
+    "pyjwt>=2.10,<3.0",
+    "sqlglot>=26.0,<27.0",
+    "pyhocon>=0.3.61,<0.4",
+    "httpx>=0.28,<1.0",
+    "langgraph>=0.2.60,<1.0",
+    "langgraph-checkpoint-postgres>=2.0,<3.0",
+    "langchain-openai>=0.3,<1.0",
+    "pymysql>=1.1,<2.0",
+    "boto3>=1.35,<2.0",
+    "python-multipart>=0.0.12",
+    "PyYAML>=6.0",
+    "jsonschema>=4.20",
+    "opentelemetry-api>=1.29,<2.0",
+    "opentelemetry-sdk>=1.29,<2.0",
+    "opentelemetry-exporter-otlp>=1.29,<2.0",
+    "prometheus-client>=0.21,<1.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3,<9.0",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["app*", "workers*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+filterwarnings = [
+    "ignore::DeprecationWarning",
+]
