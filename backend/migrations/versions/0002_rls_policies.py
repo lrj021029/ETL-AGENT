@@ -92,6 +92,9 @@ $$;
 
 ROLE_SETUP_SQL = """
 DO $$
+DECLARE
+    v_bypass BOOLEAN;
+    v_super BOOLEAN;
 BEGIN
     IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'etl_migrator') THEN
         CREATE ROLE etl_migrator LOGIN PASSWORD 'etl_migrator_local_dev' NOSUPERUSER CREATEDB CREATEROLE;
@@ -99,12 +102,18 @@ BEGIN
     IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'etl_runtime') THEN
         CREATE ROLE etl_runtime LOGIN PASSWORD 'etl_runtime_local_dev' NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS;
     ELSE
-        ALTER ROLE etl_runtime NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS;
+        SELECT rolbypassrls, rolsuper INTO v_bypass, v_super FROM pg_roles WHERE rolname = 'etl_runtime';
+        IF v_bypass OR v_super THEN
+            RAISE EXCEPTION '安全不变量违背：etl_runtime 必须为 NOSUPERUSER 且 NOBYPASSRLS';
+        END IF;
     END IF;
     IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'etl_outbox_dispatcher') THEN
         CREATE ROLE etl_outbox_dispatcher LOGIN PASSWORD 'etl_outbox_local_dev' NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS;
     ELSE
-        ALTER ROLE etl_outbox_dispatcher NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS;
+        SELECT rolbypassrls, rolsuper INTO v_bypass, v_super FROM pg_roles WHERE rolname = 'etl_outbox_dispatcher';
+        IF v_bypass OR v_super THEN
+            RAISE EXCEPTION '安全不变量违背：etl_outbox_dispatcher 必须为 NOSUPERUSER 且 NOBYPASSRLS';
+        END IF;
     END IF;
 END
 $$;
