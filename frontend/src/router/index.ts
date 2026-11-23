@@ -49,6 +49,12 @@ export const routes: RouteRecordRaw[] = [
     component: () => import('@/views/GovernanceBenchmarkView.vue'),
     meta: { title: '安全治理与 Benchmark' },
   },
+  {
+    path: '/users',
+    name: 'UsersAdmin',
+    component: () => import('@/views/UsersAdminView.vue'),
+    meta: { title: '成员与账号管理' },
+  },
 ]
 
 export function createAppRouter() {
@@ -66,6 +72,14 @@ export function createAppRouter() {
       return { path: '/overview' }
     }
     return true
+  })
+
+  // 页面标题跟随路由 meta.title（纯展示）
+  router.afterEach((to) => {
+    if (typeof document !== 'undefined') {
+      const title = typeof to.meta.title === 'string' ? to.meta.title : ''
+      document.title = title ? `${title} · ETL-Agent` : 'ETL-Agent 企业级受管数据集成控制台'
+    }
   })
 
   return router

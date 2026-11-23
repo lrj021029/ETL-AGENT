@@ -40,7 +40,7 @@ COPY --from=builder --chown=node:node /app/vite.config.* ./
 
 USER node
 
-EXPOSE 5173
+EXPOSE 5174
 
-# 监听 0.0.0.0:5173 供宿主机 127.0.0.1:5173 映射访问
-CMD ["pnpm", "run", "preview", "--host", "0.0.0.0", "--port", "5173"]
+# 监听 0.0.0.0:5174 供宿主机 127.0.0.1:5174 映射访问；/api 与 /health 由 vite preview 代理到 ETL_API_PROXY_TARGET
+CMD ["pnpm", "run", "preview", "--host", "0.0.0.0", "--port", "5174"]

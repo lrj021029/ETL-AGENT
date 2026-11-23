@@ -21,7 +21,7 @@
 ```mermaid
 flowchart TD
     User["数据工程师 / 审批人 / 操作员 / 审计员 (Windows 浏览器)"]
-    UI["Vue 3 + TS 企业级控制台 (127.0.0.1:5173)\nVue Flow DAG | Monaco SQL/HOCON/Diff | ECharts"]
+    UI["Vue 3 + TS 企业级控制台 (127.0.0.1:5174)\nVue Flow DAG | Monaco SQL/HOCON/Diff | ECharts"]
 
     User --> UI
     UI -->|"HTTPS/HTTP REST + SSE (轮询兜底)"| API
@@ -194,46 +194,39 @@ stateDiagram-v2
 ## 5. 代码仓库目录结构
 
 ```text
-d:\etl-agent\
-├── compose.yaml                      # 单一 Docker Compose（20 默认服务 + 3 扩展 Profile，仅绑定 127.0.0.1）
+etl-agent/
+├── compose.yaml                      # 单一 Docker Compose（15 核心/数据面/观测服务 + 扩展 Profile，仅绑定 127.0.0.1）
+├── requirements.txt                  # Python 后端全量依赖清单 (pip install -r requirements.txt)
 ├── .env.example                      # 本地开发占位符模板（严禁提交真实 .env 与私钥）
-├── pytest.ini                        # 全仓统一 pytest 根路径配置
-├── contracts/                        # Layer 0 冻结公共契约（OpenAPI 3.1 / ERD / RLS / JCS 向量 / JSON Schemas / 状态机）
-├── docs/
-│   ├── PRD.md                        # 产品需求规格说明书（只读基线）
-│   ├── TECHNICAL_SPEC.md             # 技术设计规格说明书（只读基线）
-│   ├── INTERVIEW_QA.md               # 项目面试深度 QA 手册（架构/安全/数据面/踩坑复盘）
-│   ├── adr/                          # ADR-001 ~ ADR-005 架构决策记录
-│   └── implementation/               # 环境覆盖登记、决策登记表与各模块实施说明
+├── contracts/                        # Layer 0 冻结公共契约（OpenAPI 3.1 / JSON Schemas / JCS 测试向量 / 状态机）
 ├── backend/
-│   ├── migrations/versions/          # Alembic 迁移（0001 71表 / 0002 FORCE RLS / 0003 身份归属函数）
+│   ├── migrations/versions/          # Alembic 迁移（0001 71表 / 0002 FORCE RLS / 0003 身份归属 / 0004 自助注册）
 │   ├── app/
-│   │   ├── api/                      # 38 条 OpenAPI 路由与 wiring.py 全模块实机装配
-│   │   ├── auth/ organizations/ projects/ memberships/   # IAM、Email OTP、双层成员与 SoD
+│   │   ├── api/                      # OpenAPI 路由与 wiring.py 全模块实机装配（含员工自助注册与管理员账号治理）
+│   │   ├── auth/ organizations/ projects/ memberships/   # IAM、Email OTP、员工注册、双层成员与 SoD
 │   │   ├── connections/ metadata/ secrets/               # 连接版本化、只读探查/Drift、Vault KV v2
 │   │   ├── agent/ artifacts/ pipeline/ sql_analysis/ compiler/ hocon/ # LangGraph + 编译门禁
 │   │   ├── policy/ preparations/ approvals/ capabilities/ broker/ evidence/ security/ # Harness 安全内核
 │   │   ├── connectors/ data_plane/ execution/ quality/ supervision/ publishing/ rollback/ # 数据面与发布
 │   │   ├── scheduling/ observability/ shared/            # 受管调度、OTel/Metrics、71 表 ORM & RLS
 │   └── workers/                      # Celery Worker/Beat 任务注册与 Outbox Dispatcher
-├── frontend/                         # Vue 3 + TS + Tailwind + Vue Flow + Monaco + ECharts 控制台
+├── frontend/                         # Vue 3 + TS + Tailwind v4 + shadcn-vue + Vue Flow + Monaco + ECharts 控制台
 ├── seatunnel/templates/              # SeaTunnel Zeta 2.3.9 Batch / 质量分流 / MySQL&PG CDC HOCON 模板
 ├── observability/                    # OTel Collector、Prometheus、Loki、Tempo、Grafana 3 数据源 + 5 大盘
 ├── benchmarks/                       # 10K/100K/1M 固定种子数据生成器 + L0/L1/L2 评测与 P0/P1 硬门槛引擎
 ├── infra/                            # PostgreSQL 三角色脚本、MySQL/PG CDC 初始化、Vault 持久化配置、Doris/Zeta 配置
-├── scripts/dev/                      # Windows PowerShell 启停/Vault 自动初始化解封脚本 + seed_demo.py
-├── qa/ACCEPTANCE_MATRIX.md           # PRD §8 全部 35 条验收标准追溯矩阵
-└── tests/                            # 契约测试、跨模块 L0/L1 安全故障套件与实机 Docker L2 套件
+└── scripts/dev/                      # Windows PowerShell 启停/Vault 自动初始化解封脚本 + seed_demo.py
 ```
 
 ---
 
-## 6. Windows 11 本机一键启动与登录指南
+## 6. 本机一键启动与快速上手指南
 
-### 6.1 前置环境（Windows PowerShell）
+### 6.1 安装依赖与启动服务
 ```powershell
-# 确保容器 CLI 与 Node 在 PATH 中
-$env:PATH = "C:\Users\FireFly\AppData\Local\Kiri\bin;D:\code\nodejs;D:\code\nodejs\node_global;$env:PATH"
+# 0. 安装 Python 依赖与前端依赖
+pip install -r requirements.txt
+pnpm --dir frontend install
 
 # 1. 复制本地环境变量（若尚未创建 .env）
 if (-not (Test-Path .env)) { Copy-Item .env.example .env }
@@ -252,41 +245,34 @@ python scripts\dev\seed_demo.py
 
 # 6. 启动后端控制面与前端控制台（分别在两个终端）
 python -m uvicorn app.main:app --app-dir backend --host 127.0.0.1 --port 8000
-pnpm --dir frontend dev --host 127.0.0.1 --port 5173
+pnpm --dir frontend dev
 ```
 
-### 6.2 访问入口与 6 类预置演示账号
+### 6.2 访问入口、员工自助注册与预置演示账号
 
-- **Vue 3 Web 控制台**：`http://127.0.0.1:5173`
+- **Vue 3 Web 控制台**：`http://127.0.0.1:5174`（支持登录页 **新员工自助注册**，默认分配最小权限 `MAKER`；管理员可在左侧「成员与账号管理」增删改角色与启停账号）
 - **FastAPI OpenAPI 文档**：`http://127.0.0.1:8000/docs`
 - **Mailpit 邮件二次验证（查看 6 位 OTP 验证码）**：`http://127.0.0.1:8025`
-- **Grafana 可观测性大盘（5 套内置看板）**：`http://127.0.0.1:3000`（`admin` / `.env` 中 `GRAFANA_ADMIN_PASSWORD`）
+- **Grafana 可观测性大盘（5 套内置看板）**：`http://127.0.0.1:3000`
 - **MinIO 对象存储控制台**：`http://127.0.0.1:9001`
 
 **所有演示账号统一初始密码：`DemoPass!2026`**（登录第一步输入邮箱和密码，第二步到 Mailpit `http://127.0.0.1:8025` 复制 6 位数字验证码填入即可）：
 
 | 角色 | 登录邮箱 | 典型操作演示 |
 |---|---|---|
-| `MAKER` | `maker@etl-agent.local` | 数据源连接与只读探查、Pipeline Studio 自然语言生成与冻结版本、发起 Prepare |
+| `MAKER` | `maker@etl-agent.local` | 数据源连接与只读探查、Pipeline Studio 自然语言生成与冻结版本、发起 Prepare（严禁自批） |
 | `DATA_CHECKER` | `data_checker@etl-agent.local` | 审批中心审阅 Schema/映射/质量规则并审批 `DATA_CHECKER` 槽位 |
 | `SECURITY_CHECKER` | `security_checker@etl-agent.local` | 审批中心审阅分级/Secret/预算/回滚计划并审批 `SECURITY_CHECKER` 槽位 |
 | `OPERATOR` | `operator@etl-agent.local` | 双审通过后执行 Commit、运行中心监控、受管中断与回滚 |
 | `AUDITOR` | `auditor@etl-agent.local` | 只读查看 Evidence Ledger 哈希链校验与 Benchmark 趋势 |
-| `ADMIN` | `admin@etl-agent.local` | 组织/项目成员与自定义角色管理 |
+| `ADMIN` | `admin@etl-agent.local` | 「成员与账号管理」新增企业员工、调整 RBAC 角色与启停账号 |
 
 ---
 
-## 7. 自动化测试与真实 L2 验收
+## 7. 前端构建与类型检查
 
 ```powershell
-# 全仓 Python 单元 + 契约 + 安全负向 + 集成 + L0/L1 + 实机 Docker L2 回归
-$env:ETL_TEST_PG_RUNTIME_URL = "postgresql+psycopg://etl_runtime:dev_only_runtime_placeholder_not_for_prod@127.0.0.1:5432/etl_control_plane"
-python -m pytest -v
-
-# Vue 3 前端类型检查 + Vitest 单元测试 + 生产构建
+# Vue 3 前端类型检查与生产构建
 pnpm --dir frontend typecheck
-pnpm --dir frontend test
 pnpm --dir frontend build
 ```
-
-核心验收证据与逐条 PRD §8 追溯详见 [qa/ACCEPTANCE_MATRIX.md](file:///d:/etl-agent/qa/ACCEPTANCE_MATRIX.md)。

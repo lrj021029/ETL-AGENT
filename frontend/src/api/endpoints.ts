@@ -1,5 +1,7 @@
 // 控制面 16 模块强类型 API 调用集合，严格对应 contracts/openapi/openapi.yaml
 import type {
+  AdminCreateUserRequest,
+  AdminUserItem,
   AgentThreadState,
   ApprovalSlotItem,
   BenchmarkDatasetItem,
@@ -29,6 +31,7 @@ import type {
   ProjectOverviewResponse,
   PublishedDatasetVersionItem,
   QualityReportResponse,
+  RegisterEmployeeRequest,
   RollbackItem,
   ScheduleItem,
   SchemaDriftEvent,
@@ -43,7 +46,13 @@ export function createApiEndpoints(client: ApiClient) {
     // 0. Health
     getHealth: () => client.get<HealthResponse>('/health', { skipTenantHeaders: true }),
 
-    // 1. Auth
+    // 1. Auth & Enterprise User Management
+    register: (body: RegisterEmployeeRequest) =>
+      client.post<OtpChallengeResponse & { user_id: string; assigned_role: string; message?: string }>(
+        '/api/v1/auth/register',
+        body,
+        { skipTenantHeaders: true },
+      ),
     login: (body: LoginRequest) =>
       client.post<OtpChallengeResponse>('/api/v1/auth/login', body, { skipTenantHeaders: true }),
     verifyOtp: (body: OtpVerifyRequest) =>
@@ -56,6 +65,24 @@ export function createApiEndpoints(client: ApiClient) {
       ),
     logout: () => client.post<void>('/api/v1/auth/logout', {}, { skipTenantHeaders: true }),
     getMe: () => client.get<UserProfile>('/api/v1/auth/me', { skipTenantHeaders: true }),
+    listAdminUsers: (projectId: string) =>
+      client.get<{ items: AdminUserItem[] }>(`/api/v1/projects/${projectId}/admin/users`),
+    createAdminUser: (projectId: string, body: AdminCreateUserRequest) =>
+      client.post<AdminUserItem>(`/api/v1/projects/${projectId}/admin/users`, body),
+    updateAdminUserStatus: (projectId: string, userId: string, status: 'ACTIVE' | 'DISABLED') =>
+      client.patch<{ id: string; email: string; status: string }>(
+        `/api/v1/projects/${projectId}/admin/users/${userId}/status`,
+        { status },
+      ),
+    updateAdminUserRoles: (
+      projectId: string,
+      userId: string,
+      body: { org_role?: 'MEMBER' | 'ORG_ADMIN'; project_roles: string[] },
+    ) =>
+      client.patch<{ id: string; email: string; org_role: string; project_roles: string[] }>(
+        `/api/v1/projects/${projectId}/admin/users/${userId}/roles`,
+        body,
+      ),
 
     // 2. Organizations & 3. Projects
     listOrganizations: () => client.get<{ items: OrganizationItem[] }>('/api/v1/organizations'),

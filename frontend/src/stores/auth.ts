@@ -14,6 +14,14 @@ import { api } from '@/api'
 const SESSION_TOKEN_KEY = 'etl_agent_session_jwt'
 const SESSION_ORG_KEY = 'etl_agent_active_org'
 const SESSION_PROJECT_KEY = 'etl_agent_active_project'
+const SESSION_ENV_KEY = 'etl_agent_active_env'
+
+function readStoredEnvironment(): EnvironmentType | null {
+  if (typeof sessionStorage === 'undefined') return null
+  const raw = sessionStorage.getItem(SESSION_ENV_KEY)
+  if (raw === 'dev' || raw === 'staging' || raw === 'prod') return raw
+  return null
+}
 
 export const useAuthStore = defineStore('auth', () => {
   const accessToken = ref<string | null>(
@@ -26,7 +34,7 @@ export const useAuthStore = defineStore('auth', () => {
   const activeProjectId = ref<string | null>(
     typeof sessionStorage !== 'undefined' ? sessionStorage.getItem(SESSION_PROJECT_KEY) : null,
   )
-  const activeEnvironment = ref<EnvironmentType>('dev')
+  const activeEnvironment = ref<EnvironmentType>(readStoredEnvironment() ?? 'dev')
   const userProfile = ref<UserProfile | null>(null)
   const otpChallenge = ref<OtpChallengeResponse | null>(null)
 
@@ -73,18 +81,31 @@ export const useAuthStore = defineStore('auth', () => {
     }
     const found = (userProfile.value?.projects ?? []).find((p) => p.id === projectId)
     if (found) {
-      activeEnvironment.value = found.environment
+      setActiveEnvironment(found.environment)
     }
   }
 
   function setActiveEnvironment(env: EnvironmentType): void {
     activeEnvironment.value = env
+    if (typeof sessionStorage !== 'undefined') {
+      sessionStorage.setItem(SESSION_ENV_KEY, env)
+    }
   }
 
   async function loginWithPassword(email: string, password: string): Promise<OtpChallengeResponse> {
     const challenge = await api.login({ email, password })
     otpChallenge.value = challenge
     return challenge
+  }
+
+  async function registerEmployee(
+    email: string,
+    displayName: string,
+    password: string,
+  ): Promise<OtpChallengeResponse & { user_id: string; assigned_role: string; message?: string }> {
+    const res = await api.register({ email, display_name: displayName, password })
+    otpChallenge.value = res
+    return res
   }
 
   async function verifyEmailOtp(otpCode: string): Promise<void> {
@@ -115,6 +136,9 @@ export const useAuthStore = defineStore('auth', () => {
       const firstInOrg =
         profile.projects.find((p) => p.organization_id === activeOrgId.value) ?? profile.projects[0]
       setActiveProject(firstInOrg.id)
+    } else if (!readStoredEnvironment() && activeProject.value) {
+      // 首次加载且尚未手动指定环境上下文时，自动同步当前激活项目的真实环境
+      setActiveEnvironment(activeProject.value.environment)
     }
     return profile
   }
@@ -133,6 +157,7 @@ export const useAuthStore = defineStore('auth', () => {
       otpChallenge.value = null
       if (typeof sessionStorage !== 'undefined') {
         sessionStorage.removeItem(SESSION_TOKEN_KEY)
+        sessionStorage.removeItem(SESSION_ENV_KEY)
       }
     }
   }
@@ -155,6 +180,7 @@ export const useAuthStore = defineStore('auth', () => {
     setActiveProject,
     setActiveEnvironment,
     loginWithPassword,
+    registerEmployee,
     verifyEmailOtp,
     fetchCurrentUser,
     logout,

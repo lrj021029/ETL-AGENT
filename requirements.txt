@@ -1,0 +1,45 @@
+# ETL-Agent 企业级异构数据集成平台 — Python 后端依赖清单 (Python >= 3.12)
+# 安装命令: pip install -r requirements.txt
+
+# Web 框架与 ASGI 服务
+fastapi>=0.115,<1.0
+uvicorn[standard]>=0.32,<1.0
+python-multipart>=0.0.12
+
+# 数据校验与配置管理
+pydantic>=2.10,<3.0
+pydantic-settings>=2.6,<3.0
+
+# 数据库 ORM、PostgreSQL/MySQL 驱动与迁移
+sqlalchemy>=2.0.35,<2.1
+psycopg[binary]>=3.2,<4.0
+pymysql>=1.1,<2.0
+alembic>=1.14,<2.0
+
+# 异步任务队列、缓存与对象存储
+celery>=5.4,<6.0
+redis>=5.2,<6.0
+boto3>=1.35,<2.0
+
+# 安全加密、JWT 鉴权与静态门禁编译器
+cryptography>=44.0,<51.0
+pyjwt>=2.10,<3.0
+sqlglot>=26.0,<27.0
+pyhocon>=0.3.61,<0.4
+PyYAML>=6.0
+jsonschema>=4.20
+
+# Agent 编排与 OpenAI 兼容客户端
+httpx>=0.28,<1.0
+langgraph>=0.2.60,<1.0
+langgraph-checkpoint-postgres>=2.0,<3.0
+langchain-openai>=0.3,<1.0
+
+# 可观测性（OpenTelemetry & Prometheus）
+opentelemetry-api>=1.29,<2.0
+opentelemetry-sdk>=1.29,<2.0
+opentelemetry-exporter-otlp>=1.29,<2.0
+prometheus-client>=0.21,<1.0
+
+# 自动化测试
+pytest>=8.3,<9.0

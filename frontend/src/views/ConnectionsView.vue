@@ -238,14 +238,14 @@ watch(
 
     <div
       v-if="uploadedObjectKey"
-      class="rounded-md border border-emerald-500/40 bg-emerald-500/10 px-3 py-2 font-mono text-xs text-emerald-300"
+      class="rounded-md border border-success/30 bg-success-soft px-3 py-2 font-mono text-xs text-success-text"
     >
       MinIO 租户隔离对象已上传：{{ uploadedObjectKey }}
     </div>
 
     <div
       v-if="actionFeedback"
-      class="rounded-md border border-sky-500/40 bg-sky-500/10 px-3 py-2 text-xs text-sky-200"
+      class="rounded-md border border-info/30 bg-info-soft px-3 py-2 text-xs text-info-text"
     >
       {{ actionFeedback }}
     </div>
@@ -257,9 +257,9 @@ watch(
           v-model="newConn.name"
           required
           placeholder="连接名称（如 demo-mysql-orders）"
-          class="rounded border bg-background px-3 py-1.5 text-xs"
+          class="rounded-sm border bg-background px-3 py-1.5 text-xs"
         />
-        <select v-model="newConn.connector_type" class="rounded border bg-background px-3 py-1.5 text-xs">
+        <select v-model="newConn.connector_type" class="rounded-sm border bg-background px-3 py-1.5 text-xs">
           <option value="mysql">MySQL</option>
           <option value="postgres">PostgreSQL</option>
           <option value="doris">Apache Doris</option>
@@ -270,39 +270,39 @@ watch(
           v-model="newConn.host"
           required
           placeholder="Host"
-          class="rounded border bg-background px-3 py-1.5 text-xs"
+          class="rounded-sm border bg-background px-3 py-1.5 text-xs"
         />
         <input
           v-model.number="newConn.port"
           type="number"
           required
           placeholder="Port"
-          class="rounded border bg-background px-3 py-1.5 text-xs"
+          class="rounded-sm border bg-background px-3 py-1.5 text-xs"
         />
         <input
           v-model="newConn.database"
           required
           placeholder="Database"
-          class="rounded border bg-background px-3 py-1.5 text-xs"
+          class="rounded-sm border bg-background px-3 py-1.5 text-xs"
         />
         <input
           v-model="newConn.secret_ref"
           type="password"
           required
           placeholder="Secret 引用（如 vault://secret/...）"
-          class="rounded border bg-background px-3 py-1.5 font-mono text-xs"
+          class="rounded-sm border bg-background px-3 py-1.5 font-mono text-xs"
         />
         <div class="sm:col-span-2 lg:col-span-3 flex justify-end gap-2">
           <button
             type="button"
-            class="rounded border px-3 py-1.5 text-xs"
+            class="rounded-sm border px-3 py-1.5 text-xs"
             @click="createFormOpen = false"
           >
             取消
           </button>
           <button
             type="submit"
-            class="rounded bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground"
+            class="rounded-sm bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground"
           >
             保存连接
           </button>
@@ -348,14 +348,14 @@ watch(
             <div class="flex gap-2 pt-2">
               <button
                 type="button"
-                class="rounded border px-2.5 py-1 hover:bg-accent"
+                class="rounded-sm border px-2.5 py-1 hover:bg-accent"
                 @click="handleTestConnection(conn)"
               >
                 只读探活
               </button>
               <button
                 type="button"
-                class="rounded border border-primary/40 bg-primary/10 px-2.5 py-1 text-primary hover:bg-primary/20"
+                class="rounded-sm border border-primary/40 bg-primary/10 px-2.5 py-1 text-primary hover:bg-primary/20"
                 @click="selectConnection(conn)"
               >
                 Metadata 快照 & Drift
@@ -376,7 +376,7 @@ watch(
         <div class="flex items-center gap-2">
           <select
             v-model="selectedSnapshotId"
-            class="rounded border bg-background px-2 py-1 font-mono text-xs"
+            class="rounded-sm border bg-background px-2 py-1 font-mono text-xs"
           >
             <option v-for="snap in snapshots" :key="snap.id" :value="snap.id">
               {{ snap.captured_at }} ({{ (snap.schema_fingerprint || '').slice(0, 12) }})
@@ -384,7 +384,7 @@ watch(
           </select>
           <button
             type="button"
-            class="rounded bg-primary px-3 py-1 text-xs text-primary-foreground"
+            class="rounded-sm bg-primary px-3 py-1 text-xs text-primary-foreground"
             @click="handleProbeMetadata"
           >
             发起只读 Probe
@@ -393,7 +393,7 @@ watch(
       </template>
 
       <div v-if="activeSnapshot" class="space-y-4 text-xs">
-        <div class="rounded border bg-muted/40 p-2 font-mono">
+        <div class="rounded-sm border bg-muted/40 p-2 font-mono">
           Schema Fingerprint: {{ activeSnapshot.schema_fingerprint }}
         </div>
 
@@ -421,7 +421,7 @@ watch(
                 <td class="py-1.5 pr-3">
                   <select
                     :value="col.sensitivity_tag || 'NONE'"
-                    class="rounded border bg-background px-1.5 py-0.5 text-xs"
+                    class="rounded-sm border bg-background px-1.5 py-0.5 text-xs"
                     @change="
                       handleTagSensitivity(
                         tbl.table_name,
@@ -454,13 +454,13 @@ watch(
           <div
             v-for="ev in driftEvents"
             :key="ev.id"
-            class="mb-2 rounded border border-amber-500/30 bg-amber-500/5 p-2.5"
+            class="mb-2 rounded-sm border border-warning/40 bg-warning-soft p-2.5"
           >
             <div class="flex items-center justify-between">
               <Badge variant="warning">Drift Severity: {{ ev.severity }}</Badge>
-              <span class="font-mono text-[11px] text-muted-foreground">{{ ev.detected_at }}</span>
+              <span class="font-mono text-xs text-muted-foreground">{{ ev.detected_at }}</span>
             </div>
-            <ul class="mt-1.5 space-y-1 font-mono text-[11px]">
+            <ul class="mt-1.5 space-y-1 font-mono text-xs">
               <li v-for="(d, idx) in ev.diffs" :key="idx">
                 [{{ d.change_type }}] {{ d.table }}.{{ d.column }}: {{ d.before || '∅' }} →
                 {{ d.after || '∅' }}
@@ -497,7 +497,7 @@ watch(
             <span>模式: {{ (entry.modes || []).join(' / ') }}</span>
             <span>方向: {{ (entry.directions || []).join(' / ') }}</span>
           </div>
-          <p v-if="entry.notes" class="mt-1 text-[11px] text-muted-foreground">{{ entry.notes }}</p>
+          <p v-if="entry.notes" class="mt-1 text-xs text-muted-foreground">{{ entry.notes }}</p>
         </div>
       </div>
     </Drawer>

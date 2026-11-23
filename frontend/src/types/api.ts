@@ -46,6 +46,33 @@ export interface LoginRequest {
   password: string
 }
 
+export interface RegisterEmployeeRequest {
+  email: string
+  display_name: string
+  password: string
+  org_slug?: string
+}
+
+export interface AdminUserItem {
+  id: string
+  email: string
+  display_name: string
+  status: 'ACTIVE' | 'DISABLED'
+  email_verified?: boolean
+  org_role: 'MEMBER' | 'ORG_ADMIN' | string
+  in_project: boolean
+  project_roles: string[]
+  created_at: string
+}
+
+export interface AdminCreateUserRequest {
+  email: string
+  display_name: string
+  password: string
+  org_role: 'MEMBER' | 'ORG_ADMIN'
+  project_role_code: SystemRole
+}
+
 /** 密码登录成功后返回的邮件二次验证挑战 */
 export interface OtpChallengeResponse {
   challenge_id: string

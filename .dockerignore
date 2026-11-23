@@ -1,0 +1,14 @@
+# 防止把 Windows 宿主机的 node_modules / 构建产物复制进 Linux 镜像
+frontend/node_modules
+frontend/dist
+frontend/.vite
+frontend/.env.*.local
+**/__pycache__
+docs/ui-redesign/run-logs
+# 传统构建器（DOCKER_BUILDKIT=0）会上传整个构建上下文：排除与镜像无关的大目录
+.git
+.pytest_cache
+.noteriv
+orbital
+**/node_modules
+.env

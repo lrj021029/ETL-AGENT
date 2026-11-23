@@ -1,55 +1,272 @@
-/* 全局基础样式与深浅色控制面主题变量 */
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+/* ETL-Agent Console 设计令牌（Light-only · Tailwind CSS v4 · shadcn-vue new-york）
+ * 依据：docs/ui-redesign/DESIGN_SYSTEM.md。小字号状态文字一律使用 *-text 色以满足 WCAG AA 对比度。
+ */
+@import "tailwindcss";
+@import "tw-animate-css";
 
-@layer base {
-  :root {
-    --background: 210 20% 98%;
-    --foreground: 222 47% 11%;
-    --card: 0 0% 100%;
-    --card-foreground: 222 47% 11%;
-    --primary: 217 91% 50%;
-    --primary-foreground: 210 40% 98%;
-    --secondary: 210 25% 92%;
-    --secondary-foreground: 222 47% 11%;
-    --muted: 210 20% 94%;
-    --muted-foreground: 215 16% 42%;
-    --accent: 210 25% 92%;
-    --accent-foreground: 222 47% 11%;
-    --destructive: 0 72% 51%;
-    --destructive-foreground: 210 40% 98%;
-    --border: 214 20% 86%;
-    --input: 214 20% 86%;
-    --ring: 217 91% 50%;
-  }
+/* 浅色单主题（TBD-07）：dark: 变体只在显式 .dark 祖先下生效，项目不设置 .dark，避免跟随系统深色模式 */
+@custom-variant dark (&:is(.dark *));
 
-  .dark {
-    --background: 222 47% 7%;
-    --foreground: 210 40% 96%;
-    --card: 222 42% 10%;
-    --card-foreground: 210 40% 96%;
-    --primary: 213 94% 58%;
-    --primary-foreground: 222 47% 7%;
-    --secondary: 217 33% 16%;
-    --secondary-foreground: 210 40% 96%;
-    --muted: 217 33% 15%;
-    --muted-foreground: 215 20% 64%;
-    --accent: 217 33% 17%;
-    --accent-foreground: 210 40% 96%;
-    --destructive: 0 68% 48%;
-    --destructive-foreground: 210 40% 98%;
-    --border: 217 28% 18%;
-    --input: 217 28% 20%;
-    --ring: 213 94% 58%;
-  }
+:root {
+  --radius: 0.625rem;
+
+  --background: #f7f8fa;
+  --foreground: #202938;
+  --card: #ffffff;
+  --card-foreground: #202938;
+  --popover: #ffffff;
+  --popover-foreground: #202938;
+
+  --primary: #635bdb;
+  --primary-foreground: #ffffff;
+  --primary-hover: #5249c9;
+  --primary-active: #4a42b8;
+  --primary-soft: #efeefc;
+
+  --secondary: #f1f3f6;
+  --secondary-foreground: #202938;
+  --muted: #f1f3f6;
+  --muted-foreground: #667085;
+  --accent: #f1f3f6;
+  --accent-foreground: #202938;
+
+  --destructive: #d64545;
+  --destructive-foreground: #ffffff;
+  --destructive-text: #b42828;
+  --destructive-soft: #fcecec;
+  --success: #16a36a;
+  --success-foreground: #ffffff;
+  --success-text: #0e7a4f;
+  --success-soft: #e8f6ef;
+  --warning: #d99018;
+  --warning-foreground: #202938;
+  --warning-text: #8a5a00;
+  --warning-soft: #fdf3e1;
+  /* Info 色值为建议值（TBD-08 Info 色未决） */
+  --info: #2e6fd8;
+  --info-foreground: #ffffff;
+  --info-text: #1f55ad;
+  --info-soft: #eaf1fc;
+
+  --border: #e5e7eb;
+  --input: #e5e7eb;
+  --ring: #635bdb;
+
+  --chart-1: #635bdb;
+  --chart-2: #98a2b3;
+  --chart-3: #16a36a;
+  --chart-4: #d99018;
+  --chart-5: #d64545;
+
+  --sidebar: #ffffff;
+  --sidebar-foreground: #344054;
+  --sidebar-primary: #635bdb;
+  --sidebar-primary-foreground: #ffffff;
+  --sidebar-accent: #efeefc;
+  --sidebar-accent-foreground: #4a42b8;
+  --sidebar-border: #e5e7eb;
+  --sidebar-ring: #635bdb;
+}
+
+@theme inline {
+  --font-sans: "Segoe UI", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", "Cascadia Mono", Consolas, monospace;
+
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 2px);
+
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-primary-hover: var(--primary-hover);
+  --color-primary-active: var(--primary-active);
+  --color-primary-soft: var(--primary-soft);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-destructive-text: var(--destructive-text);
+  --color-destructive-soft: var(--destructive-soft);
+  --color-success: var(--success);
+  --color-success-foreground: var(--success-foreground);
+  --color-success-text: var(--success-text);
+  --color-success-soft: var(--success-soft);
+  --color-warning: var(--warning);
+  --color-warning-foreground: var(--warning-foreground);
+  --color-warning-text: var(--warning-text);
+  --color-warning-soft: var(--warning-soft);
+  --color-info: var(--info);
+  --color-info-foreground: var(--info-foreground);
+  --color-info-text: var(--info-text);
+  --color-info-soft: var(--info-soft);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-ring: var(--sidebar-ring);
+
+  --shadow-popover: 0 8px 24px -6px rgb(16 24 40 / 0.12), 0 2px 6px rgb(16 24 40 / 0.06);
 }
 
 @layer base {
   * {
-    @apply border-border;
+    @apply border-border outline-ring/50;
+  }
+  html {
+    color-scheme: light;
   }
   body {
-    @apply bg-background text-foreground;
+    @apply bg-background text-foreground antialiased;
+    font-family: var(--font-sans);
+  }
+  button:not(:disabled),
+  [role="button"]:not([aria-disabled="true"]) {
+    cursor: pointer;
+  }
+  /* 全站键盘焦点样式；组件自身的 focus-visible:ring-* 类会覆盖此零特异性规则 */
+  :where(:focus-visible) {
+    outline: 2px solid var(--ring);
+    outline-offset: 2px;
+  }
+  code,
+  kbd,
+  pre,
+  samp {
+    font-family: var(--font-mono);
+  }
+}
+
+/* 路由切换与状态容器过渡动效（GPU 合成层，避免 JS 动画 Promise 挂起） */
+.page-route-enter-active {
+  transition:
+    opacity 0.2s cubic-bezier(0.22, 1, 0.36, 1),
+    transform 0.22s cubic-bezier(0.22, 1, 0.36, 1);
+}
+.page-route-leave-active {
+  transition:
+    opacity 0.12s cubic-bezier(0.4, 0, 1, 1),
+    transform 0.12s cubic-bezier(0.4, 0, 1, 1);
+}
+.page-route-enter-from {
+  opacity: 0;
+  transform: translateY(8px);
+}
+.page-route-leave-to {
+  opacity: 0;
+  transform: translateY(-4px);
+}
+
+.state-fade-enter-active {
+  transition: opacity 0.18s cubic-bezier(0.22, 1, 0.36, 1), transform 0.18s cubic-bezier(0.22, 1, 0.36, 1);
+}
+.state-fade-leave-active {
+  transition: opacity 0.1s ease-out;
+}
+.state-fade-enter-from {
+  opacity: 0;
+  transform: translateY(4px);
+}
+.state-fade-leave-to {
+  opacity: 0;
+}
+
+.badge-pop-enter-active {
+  transition: opacity 0.16s cubic-bezier(0.22, 1, 0.36, 1), transform 0.2s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+.badge-pop-leave-active {
+  transition: opacity 0.1s ease-out, transform 0.1s ease-out;
+}
+.badge-pop-enter-from {
+  opacity: 0;
+  transform: scale(0.92);
+}
+.badge-pop-leave-to {
+  opacity: 0;
+  transform: scale(0.92);
+}
+
+/* 骨架屏微光扫过动效 */
+@keyframes etl-shimmer {
+  0% {
+    background-position: -200% 0;
+  }
+  100% {
+    background-position: 200% 0;
+  }
+}
+.skeleton-shimmer {
+  background: linear-gradient(90deg, var(--muted) 25%, #e6eaf2 50%, var(--muted) 75%);
+  background-size: 200% 100%;
+  animation: etl-shimmer 1.45s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+}
+
+/* 顶部路由切换进度条扫光 */
+@keyframes etl-route-bar {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(300%);
+  }
+}
+.route-progress-bar {
+  animation: etl-route-bar 0.9s cubic-bezier(0.22, 1, 0.36, 1) infinite;
+}
+
+/* 卡片网格轻量入场节拍（克制：仅 180ms + 6px 位移） */
+@keyframes etl-stagger-enter {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+.stagger-grid > * {
+  animation: etl-stagger-enter 0.24s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+.stagger-grid > *:nth-child(2) {
+  animation-delay: 40ms;
+}
+.stagger-grid > *:nth-child(3) {
+  animation-delay: 80ms;
+}
+.stagger-grid > *:nth-child(4) {
+  animation-delay: 120ms;
+}
+
+/* 尊重系统“减少动态效果”：CSS 动画/过渡归零（Motion 组件由 MotionConfig reducedMotion="user" 处理） */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
   }
 }

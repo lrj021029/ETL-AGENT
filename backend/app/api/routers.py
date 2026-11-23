@@ -95,6 +95,30 @@ class LoginRequest(BaseModel):
     password: str
 
 
+class RegisterEmployeeRequest(BaseModel):
+    email: str
+    display_name: str = Field(..., min_length=2, max_length=128)
+    password: str = Field(..., min_length=8, max_length=128)
+    org_slug: str = "org-alpha"
+
+
+class AdminCreateUserRequest(BaseModel):
+    email: str
+    display_name: str = Field(..., min_length=2, max_length=128)
+    password: str = Field(..., min_length=8, max_length=128)
+    org_role: str = "MEMBER"
+    project_role_code: str = "MAKER"
+
+
+class AdminUpdateUserStatusRequest(BaseModel):
+    status: str
+
+
+class AdminUpdateUserRolesRequest(BaseModel):
+    org_role: str | None = None
+    project_roles: list[str] = Field(..., min_length=1)
+
+
 class OtpVerifyRequest(BaseModel):
     challenge_id: uuid.UUID
     otp_code: str = Field(..., min_length=4, max_length=12)
@@ -214,6 +238,27 @@ def get_health(
 # ==================== 1. Auth Router ====================
 
 auth_router = APIRouter(prefix="/api/v1/auth", tags=["Auth"])
+
+
+@auth_router.post("/register", status_code=status.HTTP_201_CREATED)
+def register_employee(
+    payload: RegisterEmployeeRequest,
+    request: Request,
+    session: Session = Depends(get_db_session),
+    auth_service: AuthService = Depends(get_auth_service),
+) -> dict[str, Any]:
+    """企业员工自助注册 -> 分配默认最小权限角色 MAKER 并发送邮件二次验证（Email OTP）挑战。"""
+    client_host = request.client.host if request.client else "127.0.0.1"
+    ua = request.headers.get("User-Agent", "etl-agent-client")
+    return auth_service.register_employee(
+        session,
+        email=payload.email,
+        display_name=payload.display_name,
+        password=payload.password,
+        org_slug=payload.org_slug,
+        ip_address=client_host,
+        user_agent=ua,
+    )
 
 
 @auth_router.post("/login")
@@ -492,6 +537,102 @@ def get_project_overview(
         session,
         organization_id=ctx.organization_id,
         project_id=ctx.project_id,
+    )
+
+
+def _require_user_admin(ctx: ProjectRequestContext) -> None:
+    """强制校验调用者拥有 ORG_ADMIN 或 PROJECT_ADMIN 权限，否则返回 403 PERMISSION_DENIED。"""
+    is_admin = (
+        ctx.org_role == "ORG_ADMIN"
+        or "ORG_ADMIN" in ctx.project_roles
+        or "PROJECT_ADMIN" in ctx.project_roles
+    )
+    if not is_admin:
+        raise AppError(
+            ErrorCode.PERMISSION_DENIED,
+            "仅组织管理员 (ORG_ADMIN) 或项目管理员 (PROJECT_ADMIN) 可管理企业员工账号与角色",
+        )
+
+
+@projects_router.get("/{project_id}/admin/users", tags=["AdminUsers"])
+def list_project_admin_users(
+    ctx: ProjectRequestContext = Depends(require_project_context),
+    session: Session = Depends(get_db_session),
+    auth_service: AuthService = Depends(get_auth_service),
+) -> dict[str, Any]:
+    """列出当前组织与项目的企业成员花名册（所有项目成员可只读查看团队分工，写操作受管理员权限保护）。"""
+    return {
+        "items": auth_service.list_org_project_users(
+            session,
+            organization_id=ctx.organization_id,
+            project_id=ctx.project_id,
+        )
+    }
+
+
+@projects_router.post(
+    "/{project_id}/admin/users",
+    tags=["AdminUsers"],
+    status_code=status.HTTP_201_CREATED,
+)
+def create_project_admin_user(
+    payload: AdminCreateUserRequest,
+    ctx: ProjectRequestContext = Depends(require_project_context),
+    session: Session = Depends(get_db_session),
+    auth_service: AuthService = Depends(get_auth_service),
+) -> dict[str, Any]:
+    """管理员新增企业员工账号并分配组织/项目角色。"""
+    _require_user_admin(ctx)
+    return auth_service.admin_create_employee(
+        session,
+        organization_id=ctx.organization_id,
+        project_id=ctx.project_id,
+        email=payload.email,
+        display_name=payload.display_name,
+        password=payload.password,
+        org_role=payload.org_role,
+        project_role_code=payload.project_role_code,
+        actor_user_id=ctx.principal.user_id,
+    )
+
+
+@projects_router.patch("/{project_id}/admin/users/{user_id}/status", tags=["AdminUsers"])
+def update_project_admin_user_status(
+    user_id: uuid.UUID,
+    payload: AdminUpdateUserStatusRequest,
+    ctx: ProjectRequestContext = Depends(require_project_context),
+    session: Session = Depends(get_db_session),
+    auth_service: AuthService = Depends(get_auth_service),
+) -> dict[str, Any]:
+    """管理员启用或禁用本组织员工账号。"""
+    _require_user_admin(ctx)
+    return auth_service.admin_update_user_status(
+        session,
+        organization_id=ctx.organization_id,
+        target_user_id=user_id,
+        new_status=payload.status,
+        actor_user_id=ctx.principal.user_id,
+    )
+
+
+@projects_router.patch("/{project_id}/admin/users/{user_id}/roles", tags=["AdminUsers"])
+def update_project_admin_user_roles(
+    user_id: uuid.UUID,
+    payload: AdminUpdateUserRolesRequest,
+    ctx: ProjectRequestContext = Depends(require_project_context),
+    session: Session = Depends(get_db_session),
+    auth_service: AuthService = Depends(get_auth_service),
+) -> dict[str, Any]:
+    """管理员调整本组织/项目员工角色绑定。"""
+    _require_user_admin(ctx)
+    return auth_service.admin_update_user_roles(
+        session,
+        organization_id=ctx.organization_id,
+        project_id=ctx.project_id,
+        target_user_id=user_id,
+        org_role=payload.org_role,
+        project_role_codes=payload.project_roles,
+        actor_user_id=ctx.principal.user_id,
     )
 
 

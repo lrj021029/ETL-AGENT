@@ -184,7 +184,7 @@ watch(
               </Badge>
               <button
                 type="button"
-                class="rounded border px-2.5 py-1 text-xs hover:bg-accent"
+                class="rounded-sm border px-2.5 py-1 text-xs hover:bg-accent"
                 @click="openDetail(prep)"
               >
                 审查冻结事实与审批
@@ -214,17 +214,17 @@ watch(
           v-if="actionError"
           role="alert"
           data-testid="backend-rejection-alert"
-          class="rounded-md border border-rose-500/40 bg-rose-500/10 p-3 text-rose-200"
+          class="rounded-md border border-destructive/30 bg-destructive-soft p-3 text-destructive-text"
         >
-          <div class="font-semibold text-rose-300">
+          <div class="font-semibold text-destructive-text">
             {{ actionError.code }}: {{ actionError.message }}
           </div>
-          <div class="mt-1 font-mono text-[11px] opacity-80">Trace ID: {{ actionError.traceId }}</div>
+          <div class="mt-1 font-mono text-xs opacity-80">Trace ID: {{ actionError.traceId }}</div>
         </div>
 
         <div
           v-if="selectedPrep.status === 'INVALIDATED' && selectedPrep.invalidation_reason"
-          class="rounded-md border border-amber-500/40 bg-amber-500/10 p-3 text-amber-200"
+          class="rounded-md border border-warning/40 bg-warning-soft p-3 text-warning-text"
         >
           <div class="font-semibold">Preparation 已失效</div>
           <p class="mt-1">{{ selectedPrep.invalidation_reason }}</p>
@@ -232,17 +232,17 @@ watch(
 
         <div
           v-if="commitResult"
-          class="rounded-md border border-emerald-500/40 bg-emerald-500/10 p-3 text-emerald-200"
+          class="rounded-md border border-success/30 bg-success-soft p-3 text-success-text"
         >
           <div class="font-semibold">Operator Commit 已受理</div>
-          <div class="mt-1 font-mono text-[11px]">
+          <div class="mt-1 font-mono text-xs">
             Execution ID: {{ commitResult.execution_id }} | Command: {{ commitResult.command_id }} |
             确认状态: {{ commitResult.confirmation_state }}
           </div>
         </div>
 
         <!-- 冻结事实 -->
-        <div class="space-y-1.5 rounded border bg-muted/30 p-3 font-mono text-[11px]">
+        <div class="space-y-1.5 rounded-sm border bg-muted/30 p-3 font-mono text-xs">
           <div>状态: {{ selectedPrep.status }} | 风险等级: {{ selectedPrep.risk_level }}</div>
           <div>输入指纹: {{ selectedPrep.input_fingerprint }}</div>
           <div>制品 SHA256: {{ selectedPrep.artifact_sha256 }}</div>
@@ -260,7 +260,7 @@ watch(
           <input
             v-model="approvalReason"
             placeholder="填写审查结论（如：Schema、脱敏与预算均符合 P1 要求）"
-            class="w-full rounded border bg-background px-2.5 py-1.5"
+            class="w-full rounded-sm border bg-background px-2.5 py-1.5"
           />
         </div>
 
@@ -270,7 +270,7 @@ watch(
           <div
             v-for="slot in selectedPrep.approval_slots"
             :key="slot.slot_type"
-            class="rounded border p-3"
+            class="rounded-sm border p-3"
           >
             <div class="flex items-center justify-between">
               <span class="font-semibold">{{ slot.slot_type }}</span>
@@ -286,20 +286,20 @@ watch(
                 {{ slot.status }}
               </Badge>
             </div>
-            <div v-if="slot.decided_by_name" class="mt-1 text-[11px] text-muted-foreground">
+            <div v-if="slot.decided_by_name" class="mt-1 text-xs text-muted-foreground">
               决策人: {{ slot.decided_by_name }} ({{ slot.decided_at }}) · 理由: {{ slot.reason }}
             </div>
             <div class="mt-2 flex gap-2">
               <button
                 type="button"
-                class="rounded bg-emerald-600 px-2.5 py-1 text-white hover:bg-emerald-500"
+                class="rounded-sm bg-success px-2.5 py-1 text-white hover:bg-success/90"
                 @click="handleSubmitApproval(slot.slot_type, 'APPROVED')"
               >
                 通过 ({{ slot.slot_type }})
               </button>
               <button
                 type="button"
-                class="rounded bg-rose-600 px-2.5 py-1 text-white hover:bg-rose-500"
+                class="rounded-sm bg-destructive px-2.5 py-1 text-white hover:bg-destructive/90"
                 @click="handleSubmitApproval(slot.slot_type, 'REJECTED')"
               >
                 拒绝
@@ -333,16 +333,16 @@ watch(
           <label class="mb-1 block font-medium">Idempotency-Key</label>
           <input
             v-model="commitIdempotencyKey"
-            class="w-full rounded border bg-background px-2.5 py-1.5 font-mono"
+            class="w-full rounded-sm border bg-background px-2.5 py-1.5 font-mono"
           />
         </div>
         <div class="flex justify-end gap-2">
-          <button type="button" class="rounded border px-3 py-1.5" @click="commitModalOpen = false">
+          <button type="button" class="rounded-sm border px-3 py-1.5" @click="commitModalOpen = false">
             取消
           </button>
           <button
             type="button"
-            class="rounded bg-primary px-3 py-1.5 font-medium text-primary-foreground"
+            class="rounded-sm bg-primary px-3 py-1.5 font-medium text-primary-foreground"
             @click="handleConfirmCommit"
           >
             确认 Commit

@@ -1,4 +1,4 @@
-<!-- 语义化状态徽章组件 -->
+<!-- 语义化状态徽章组件（浅色令牌）：soft 底 + *-text 文字，保证小字号对比度；接口与原组件一致 -->
 <script setup lang="ts">
 import { computed } from 'vue'
 
@@ -12,24 +12,24 @@ const props = withDefaults(
 const variantClass = computed(() => {
   switch (props.variant) {
     case 'success':
-      return 'bg-emerald-500/15 text-emerald-400 border-emerald-500/30'
+      return 'bg-success-soft text-success-text border-success/25'
     case 'warning':
-      return 'bg-amber-500/15 text-amber-400 border-amber-500/30'
+      return 'bg-warning-soft text-warning-text border-warning/30'
     case 'danger':
-      return 'bg-rose-500/15 text-rose-400 border-rose-500/30'
+      return 'bg-destructive-soft text-destructive-text border-destructive/25'
     case 'info':
-      return 'bg-sky-500/15 text-sky-400 border-sky-500/30'
+      return 'bg-info-soft text-info-text border-info/25'
     case 'outline':
       return 'bg-transparent text-muted-foreground border-border'
     default:
-      return 'bg-secondary text-secondary-foreground border-border'
+      return 'bg-muted text-foreground/80 border-border'
   }
 })
 </script>
 
 <template>
   <span
-    class="inline-flex items-center gap-1 rounded-md border px-2 py-0.5 text-xs font-medium tracking-tight"
+    class="inline-flex h-[22px] items-center gap-1 rounded-md border px-2 text-xs font-medium whitespace-nowrap"
     :class="variantClass"
   >
     <slot />

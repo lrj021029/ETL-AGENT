@@ -68,16 +68,17 @@ services:
     container_name: etl-agent-frontend
     restart: unless-stopped
     environment:
-      VITE_API_BASE_URL: ${VITE_API_BASE_URL:-http://127.0.0.1:8000}
+      # 浏览器只访问同源 5174，vite preview 把 /api、/health 代理到容器网络内的 api 服务
+      ETL_API_PROXY_TARGET: ${ETL_API_PROXY_TARGET:-http://api:8000}
     ports:
-      - "127.0.0.1:${FRONTEND_PORT:-5173}:5173"
+      - "127.0.0.1:${FRONTEND_PORT:-5174}:5174"
     volumes:
       - frontend_cache:/app/.vite
     depends_on:
       api:
         condition: service_healthy
     healthcheck:
-      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:5173/ >/dev/null || exit 1"]
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:5174/ >/dev/null || exit 1"]
       interval: 15s
       timeout: 5s
       retries: 5

@@ -38,14 +38,14 @@ const benchmarkChartOption = computed<EChartsOption>(() => ({
   tooltip: { trigger: 'axis' },
   legend: {
     data: ['Plan Validity', 'SQL Safety', 'P0 Block Rate', 'Composite Score'],
-    textStyle: { color: '#94a3b8' },
+    textStyle: { color: '#667085' },
   },
   xAxis: {
     type: 'category',
     data: runs.value.map((r) => `${r.model_name} (${r.policy_version})`),
-    axisLabel: { color: '#94a3b8' },
+    axisLabel: { color: '#667085' },
   },
-  yAxis: { type: 'value', max: 100, axisLabel: { color: '#94a3b8' } },
+  yAxis: { type: 'value', max: 100, axisLabel: { color: '#667085' } },
   series: [
     {
       name: 'Plan Validity',
@@ -173,7 +173,7 @@ watch(
           <template #header>
             <button
               type="button"
-              class="rounded bg-primary px-3 py-1 text-xs font-medium text-primary-foreground"
+              class="rounded-sm bg-primary px-3 py-1 text-xs font-medium text-primary-foreground"
               @click="handleVerifyChain"
             >
               校验 SHA256 链与 Ed25519 签名
@@ -182,15 +182,15 @@ watch(
 
           <div
             v-if="verifyResult"
-            class="mb-3 rounded border p-3 text-xs"
+            class="mb-3 rounded-sm border p-3 text-xs"
             :class="
               verifyResult.chain_valid && verifyResult.checkpoint_signatures_valid
-                ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-200'
-                : 'border-rose-500/40 bg-rose-500/10 text-rose-200'
+                ? 'border-success/30 bg-success-soft text-success-text'
+                : 'border-destructive/30 bg-destructive-soft text-destructive-text'
             "
           >
             <div class="font-semibold">{{ verifyResult.message }}</div>
-            <div class="mt-1 font-mono text-[11px]">
+            <div class="mt-1 font-mono text-xs">
               已校验事件数: {{ verifyResult.verified_events_count }} | Hash Chain:
               {{ verifyResult.chain_valid }} | Ed25519 Checkpoints:
               {{ verifyResult.checkpoint_signatures_valid }}
@@ -200,7 +200,7 @@ watch(
           <div class="grid gap-4 md:grid-cols-2 text-xs">
             <div>
               <h4 class="mb-1.5 font-semibold">最近 Evidence 事件 ({{ evidenceEvents.length }})</h4>
-              <div class="max-h-40 space-y-1 overflow-y-auto font-mono text-[11px]">
+              <div class="max-h-40 space-y-1 overflow-y-auto font-mono text-xs">
                 <div v-for="ev in evidenceEvents" :key="ev.id" class="border-b py-1">
                   #{{ ev.seq }} [{{ ev.event_type }}] {{ (ev.sha256_hash || '').slice(0, 14) }}…
                 </div>
@@ -208,7 +208,7 @@ watch(
             </div>
             <div>
               <h4 class="mb-1.5 font-semibold">Ed25519 签名 Checkpoints ({{ checkpoints.length }})</h4>
-              <div class="max-h-40 space-y-1 overflow-y-auto font-mono text-[11px]">
+              <div class="max-h-40 space-y-1 overflow-y-auto font-mono text-xs">
                 <div v-for="cp in checkpoints" :key="cp.id" class="border-b py-1">
                   seq {{ cp.from_seq }}..{{ cp.to_seq }} · key={{ cp.key_id }} · sig={{
                     (cp.ed25519_signature || '').slice(0, 16)
@@ -223,7 +223,7 @@ watch(
         <Card title="Benchmark 数据集 (10K / 100K / 1M) 与 L0/L1/L2 评测">
           <template #header>
             <div class="flex flex-wrap items-center gap-2 text-xs">
-              <select v-model="newDatasetScale" class="rounded border bg-background px-2 py-1">
+              <select v-model="newDatasetScale" class="rounded-sm border bg-background px-2 py-1">
                 <option value="10K">10K</option>
                 <option value="100K">100K</option>
                 <option value="1M">1M</option>
@@ -231,32 +231,32 @@ watch(
               <input
                 v-model.number="newDatasetSeed"
                 type="number"
-                class="w-20 rounded border bg-background px-2 py-1 font-mono"
+                class="w-20 rounded-sm border bg-background px-2 py-1 font-mono"
               />
               <button
                 type="button"
-                class="rounded border px-2.5 py-1 hover:bg-accent"
+                class="rounded-sm border px-2.5 py-1 hover:bg-accent"
                 @click="handleGenerateDataset"
               >
                 生成确定性数据集
               </button>
               <button
                 type="button"
-                class="rounded bg-primary px-2.5 py-1 text-primary-foreground"
+                class="rounded-sm bg-primary px-2.5 py-1 text-primary-foreground"
                 @click="handleTriggerRun('L0')"
               >
                 触发 L0
               </button>
               <button
                 type="button"
-                class="rounded bg-primary px-2.5 py-1 text-primary-foreground"
+                class="rounded-sm bg-primary px-2.5 py-1 text-primary-foreground"
                 @click="handleTriggerRun('L1')"
               >
                 触发 L1
               </button>
               <button
                 type="button"
-                class="rounded bg-primary px-2.5 py-1 text-primary-foreground"
+                class="rounded-sm bg-primary px-2.5 py-1 text-primary-foreground"
                 @click="handleTriggerRun('L2')"
               >
                 触发 L2
@@ -306,14 +306,14 @@ watch(
             暂无策略版本记录。
           </div>
           <div v-else class="space-y-2 text-xs">
-            <div v-for="p in policies" :key="p.id" class="rounded border p-3">
+            <div v-for="p in policies" :key="p.id" class="rounded-sm border p-3">
               <div class="flex items-center justify-between font-mono">
                 <span class="font-semibold">{{ p.version }}</span>
                 <span class="text-muted-foreground">{{ p.created_by }} · {{ p.created_at }}</span>
               </div>
               <pre
                 v-if="p.diff_from_prev"
-                class="mt-2 overflow-x-auto rounded bg-zinc-950 p-2 font-mono text-[11px] text-zinc-300"
+                class="mt-2 overflow-x-auto rounded-sm bg-muted p-2 font-mono text-xs text-foreground"
               >{{ p.diff_from_prev }}</pre>
             </div>
           </div>

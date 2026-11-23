@@ -62,15 +62,15 @@ function confirmationLabel(cs: ConfirmationState): string {
 const throughputOption = computed<EChartsOption>(() => ({
   backgroundColor: 'transparent',
   tooltip: { trigger: 'axis' },
-  legend: { data: ['吞吐量 (rows/s)', '整体拒绝率 (%)'], textStyle: { color: '#94a3b8' } },
+  legend: { data: ['吞吐量 (rows/s)', '整体拒绝率 (%)'], textStyle: { color: '#667085' } },
   xAxis: {
     type: 'category',
     data: metricsHistory.value.map((m) => m.sampled_at.slice(11, 19)),
-    axisLabel: { color: '#94a3b8' },
+    axisLabel: { color: '#667085' },
   },
   yAxis: [
-    { type: 'value', name: 'RPS', axisLabel: { color: '#94a3b8' } },
-    { type: 'value', name: 'Reject %', max: 100, axisLabel: { color: '#f87171' } },
+    { type: 'value', name: 'RPS', axisLabel: { color: '#667085' } },
+    { type: 'value', name: 'Reject %', max: 100, axisLabel: { color: '#D64545' } },
   ],
   series: [
     {
@@ -86,7 +86,7 @@ const throughputOption = computed<EChartsOption>(() => ({
       data: metricsHistory.value.map((m) => Number((m.reject_rate_total * 100).toFixed(2))),
       markLine: {
         data: [{ yAxis: 20, name: '20% 硬阈值' }],
-        lineStyle: { color: '#ef4444', type: 'dashed' },
+        lineStyle: { color: '#D64545', type: 'dashed' },
       },
     },
   ],
@@ -173,25 +173,42 @@ async function selectRun(run: ExecutionRunItem): Promise<void> {
 async function handleCancel(): Promise<void> {
   const projectId = auth.activeProject?.id
   if (!projectId || !selectedRun.value) return
-  await api.cancelExecution(projectId, selectedRun.value.id)
-  actionNotice.value = '已通过 Tool Broker 提交受管取消/停止命令。'
+  try {
+    await api.cancelExecution(projectId, selectedRun.value.id)
+    actionNotice.value = '已通过 Tool Broker 提交受管取消/停止命令。'
+    await loadExecutions()
+  } catch (err) {
+    actionNotice.value =
+      err instanceof ApiClientError ? `${err.errorCode}: ${err.message} (Trace: ${err.traceId})` : String(err)
+  }
 }
 
 async function handleReconcile(): Promise<void> {
   const projectId = auth.activeProject?.id
   if (!projectId || !selectedRun.value) return
-  await api.reconcileExecution(projectId, selectedRun.value.id)
-  actionNotice.value = '已触发 UNKNOWN 状态对账命令。'
+  try {
+    await api.reconcileExecution(projectId, selectedRun.value.id)
+    actionNotice.value = '已触发 UNKNOWN 状态对账命令。'
+    await loadExecutions()
+  } catch (err) {
+    actionNotice.value =
+      err instanceof ApiClientError ? `${err.errorCode}: ${err.message} (Trace: ${err.traceId})` : String(err)
+  }
 }
 
 async function handlePrepareRollback(): Promise<void> {
   const projectId = auth.activeProject?.id
   if (!projectId || !selectedRun.value) return
-  const prep = await api.prepareRollback(projectId, {
-    execution_id: selectedRun.value.id,
-    rollback_type: selectedRun.value.execution_mode === 'CDC' ? 'CDC_RECOVERY' : 'SWAP_RESTORE',
-  })
-  actionNotice.value = `已创建受管回滚 Preparation (${prep.id})，请前往审批控制台完成审批与 Commit。`
+  try {
+    const prep = await api.prepareRollback(projectId, {
+      execution_id: selectedRun.value.id,
+      rollback_type: selectedRun.value.execution_mode === 'CDC' ? 'CDC_RECOVERY' : 'SWAP_RESTORE',
+    })
+    actionNotice.value = `已创建受管回滚 Preparation (${prep.id})，请前往审批控制台完成审批与 Commit。`
+  } catch (err) {
+    actionNotice.value =
+      err instanceof ApiClientError ? `${err.errorCode}: ${err.message} (Trace: ${err.traceId})` : String(err)
+  }
 }
 
 onMounted(() => {
@@ -242,7 +259,7 @@ onBeforeUnmount(() => {
 
     <div
       v-if="actionNotice"
-      class="rounded-md border border-sky-500/40 bg-sky-500/10 px-3 py-2 text-xs text-sky-200"
+      class="rounded-md border border-info/30 bg-info-soft px-3 py-2 text-xs text-info-text"
     >
       {{ actionNotice }}
     </div>
@@ -275,7 +292,7 @@ onBeforeUnmount(() => {
                 <span class="font-mono font-semibold">{{ (run.id || '').slice(0, 8) }}</span>
                 <Badge :variant="statusVariant(run.status)">{{ run.status }}</Badge>
               </div>
-              <div class="mt-1 font-mono text-[11px] text-muted-foreground">
+              <div class="mt-1 font-mono text-xs text-muted-foreground">
                 Zeta Job: {{ run.external_job_id || '待分配' }}
               </div>
             </button>
@@ -307,21 +324,21 @@ onBeforeUnmount(() => {
               <div class="flex flex-wrap gap-2 text-xs">
                 <button
                   type="button"
-                  class="rounded border border-rose-500/40 px-3 py-1 text-rose-300 hover:bg-rose-500/10"
+                  class="rounded-sm border border-destructive/30 px-3 py-1 text-destructive-text hover:bg-destructive-soft"
                   @click="handleCancel"
                 >
                   受管取消 / 停止
                 </button>
                 <button
                   type="button"
-                  class="rounded border border-amber-500/40 px-3 py-1 text-amber-300 hover:bg-amber-500/10"
+                  class="rounded-sm border border-warning/40 px-3 py-1 text-warning-text hover:bg-warning-soft"
                   @click="handleReconcile"
                 >
                   触发对账 (Reconcile)
                 </button>
                 <button
                   type="button"
-                  class="rounded border px-3 py-1 hover:bg-accent"
+                  class="rounded-sm border px-3 py-1 hover:bg-accent"
                   @click="handlePrepareRollback"
                 >
                   发起受管回滚 Prepare
@@ -333,7 +350,7 @@ onBeforeUnmount(() => {
               <!-- 诊断建议（强制标记只读 / 无副作用） -->
               <div
                 v-if="selectedRun.diagnosis"
-                class="rounded-md border border-sky-500/30 bg-sky-500/5 p-3 text-xs"
+                class="rounded-md border border-info/30 bg-info-soft p-3 text-xs"
               >
                 <div class="flex items-center justify-between">
                   <span class="font-semibold">智能诊断分析</span>
@@ -350,7 +367,7 @@ onBeforeUnmount(() => {
                     拒绝率: {{ (qualityReport.reject_rate * 100).toFixed(2) }}%
                   </Badge>
                 </div>
-                <div class="mt-2 space-y-1 font-mono text-[11px]">
+                <div class="mt-2 space-y-1 font-mono text-xs">
                   <div v-for="err in qualityReport.redacted_error_distribution" :key="err.error_code">
                     {{ err.error_code }}: {{ err.count }} 行 (脱敏样本: {{ err.sample_redacted || '***' }})
                   </div>

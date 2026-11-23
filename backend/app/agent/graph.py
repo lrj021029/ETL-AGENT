@@ -134,11 +134,33 @@ def _llm_payload(state: AgentState) -> dict[str, Any]:
     return {"intent": intent, "metadata": {"tables": tables}, "dialect": fam}
 
 
+def _split_qualified_table(name: str, default_schema: str) -> tuple[str, str]:
+    """安全拆分 schema.table；若用户输入未包含库名前缀则回退至默认 schema。"""
+    clean = str(name or "").strip()
+    if "." in clean:
+        schema_part, table_part = clean.split(".", 1)
+        return (schema_part.strip() or default_schema), (table_part.strip() or clean)
+    return default_schema, (clean or "target_table")
+
+
+def _resolve_source_table_in_metadata(source_table: str, tables: dict[str, Any]) -> str:
+    """在只读元数据快照中匹配源表全名（支持精确匹配与按裸表名智能回退）。"""
+    if source_table in tables or not tables:
+        return source_table
+    bare = source_table.split(".")[-1].lower()
+    for qualified in tables:
+        if qualified.split(".")[-1].lower() == bare:
+            return qualified
+    return source_table
+
+
 def assemble_plan(state: AgentState, parts: dict[str, Any]) -> dict[str, Any]:
     """连接 / Connector / 写入模式 / 发布策略全部由确定性代码填写，LLM 只贡献 parts。"""
     intent, b = state["intent"], state["request"]["bindings"]
-    sschema, stable = intent["source_table"].split(".", 1)
-    tschema, ttable = intent["sink_table"].split(".", 1)
+    meta_tables = (state.get("metadata") or {}).get("tables") or {}
+    resolved_src = _resolve_source_table_in_metadata(str(intent["source_table"]), meta_tables)
+    sschema, stable = _split_qualified_table(resolved_src, "demo_ecommerce")
+    tschema, ttable = _split_qualified_table(str(intent["sink_table"]), "etl_warehouse")
     sync = intent["sync_mode"]
     write_mode = intent.get("write_mode") or ("UPSERT" if sync == "CDC" else "SHADOW_SWAP")
     pks = list(intent.get("primary_keys") or [])

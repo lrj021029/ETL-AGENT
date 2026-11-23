@@ -1024,7 +1024,8 @@ def _resolve_agent_bindings_and_hints(
     hints: dict[str, Any] = dict(payload.get("hints") or {})
     if "execution_mode" in payload and "sync_mode" not in hints:
         em = str(payload["execution_mode"]).upper()
-        hints["sync_mode"] = "CDC" if em == "CDC" else "FULL_LOAD"
+        if em == "CDC":
+            hints["sync_mode"] = "CDC"
     for key in (
         "source_table",
         "sink_table",
@@ -1195,24 +1196,42 @@ def wire_application(app: FastAPI, settings: Settings | None = None) -> WiringCo
             "policy_version": "v1.0.0",
             "external_provider": container.runtime_backends.get("llm_provider", "DeterministicMock"),
         }
+        field_prompts = {
+            "source_table": "请确认源表全名（例如 demo_ecommerce.orders）",
+            "sink_table": "请确认目标表全名（例如 etl_warehouse.ods_orders）",
+            "sync_mode": "请确认同步模式（FULL_LOAD / INCREMENTAL / CDC）",
+            "incremental_column": "增量同步必填：请填写增量水位列名（例如 updated_at）",
+            "primary_keys": "请填写主键列名（多个逗号分隔，例如 order_id）",
+        }
         interrupt_questions: list[dict[str, Any]] = []
         if isinstance(interrupt_payload, dict):
-            missing = interrupt_payload.get("missing_fields") or interrupt_payload.get("questions") or []
+            missing = (
+                interrupt_payload.get("missing")
+                or interrupt_payload.get("missing_fields")
+                or interrupt_payload.get("questions")
+                or []
+            )
             if isinstance(missing, list):
                 for item in missing:
                     if isinstance(item, dict):
+                        fld = str(item.get("field") or item.get("key") or "param")
                         interrupt_questions.append(
                             {
-                                "field": str(item.get("field") or item.get("key") or "param"),
-                                "prompt": str(item.get("prompt") or item.get("question") or f"请补充 {item.get('field', '参数')}"),
+                                "field": fld,
+                                "prompt": str(
+                                    item.get("prompt")
+                                    or item.get("question")
+                                    or field_prompts.get(fld, f"请补充 {fld}")
+                                ),
                                 "required": bool(item.get("required", True)),
                             }
                         )
                     else:
+                        fld = str(item)
                         interrupt_questions.append(
                             {
-                                "field": str(item),
-                                "prompt": f"请补充必填参数：{item}",
+                                "field": fld,
+                                "prompt": field_prompts.get(fld, f"请补充必填参数：{fld}"),
                                 "required": True,
                             }
                         )
@@ -1222,6 +1241,17 @@ def wire_application(app: FastAPI, settings: Settings | None = None) -> WiringCo
             plan = candidate.get("plan") or {}
             src = plan.get("source") or {}
             sink = plan.get("sink") or {}
+            src_objs = src.get("objects") or []
+            src_label = (
+                f"{src_objs[0].get('schema_name', '')}.{src_objs[0].get('table_name', '')}".strip(".")
+                if src_objs and isinstance(src_objs[0], dict)
+                else str(src.get("table") or src.get("connector_id") or "source")
+            )
+            sink_label = (
+                f"{sink.get('target_schema', '')}.{sink.get('target_table', '')}".strip(".")
+                if sink.get("target_table")
+                else str(sink.get("table") or sink.get("connector_id") or "doris")
+            )
             transforms = plan.get("transformations") or []
             sql_parts = [str(t.get("sql_text", "")) for t in transforms if isinstance(t, dict) and t.get("sql_text")]
             sql_text = "\n;\n".join(sql_parts) or "-- SELECT * FROM source_table"
@@ -1229,13 +1259,14 @@ def wire_application(app: FastAPI, settings: Settings | None = None) -> WiringCo
             sc = candidate.get("supervision_contract") or {}
             limits = sc.get("resource_limits") or sc
             reject_cfg = sc.get("reject_rate_guard") or {}
+            raw_mappings = plan.get("field_mappings") or plan.get("column_mappings") or []
             draft_artifacts = {
                 "etl_plan_dsl": plan,
                 "dag_nodes": [
                     {
                         "id": "node-source",
                         "kind": "SOURCE",
-                        "label": f"Source: {src.get('table', src.get('connector_id', 'source'))}",
+                        "label": f"Source: {src_label}",
                         "connector_type": str(src.get("connector_id", "mysql-jdbc")),
                     },
                     {
@@ -1247,7 +1278,7 @@ def wire_application(app: FastAPI, settings: Settings | None = None) -> WiringCo
                     {
                         "id": "node-sink",
                         "kind": "SINK",
-                        "label": f"Sink: {sink.get('table', sink.get('connector_id', 'doris'))}",
+                        "label": f"Sink: {sink_label}",
                         "connector_type": str(sink.get("connector_id", "doris")),
                     },
                 ],
@@ -1260,18 +1291,27 @@ def wire_application(app: FastAPI, settings: Settings | None = None) -> WiringCo
                 "seatunnel_hocon": str(candidate.get("hocon") or ""),
                 "schema_mapping_diff": [
                     {
-                        "source_column": str(m.get("source_column", m.get("source", ""))),
-                        "source_type": str(m.get("source_type", "VARCHAR")),
-                        "target_column": str(m.get("target_column", m.get("target", ""))),
-                        "target_type": str(m.get("target_type", "VARCHAR")),
-                        "sensitivity_before": str(m.get("sensitivity", "NONE")),
-                        "masking_after": str(m.get("masking_rule", "PASSTHROUGH")),
+                        "source_column": str(m.get("source_field") or m.get("source_column") or m.get("source") or ""),
+                        "source_type": str(m.get("source_type") or m.get("target_type") or "VARCHAR"),
+                        "target_column": str(m.get("target_field") or m.get("target_column") or m.get("target") or ""),
+                        "target_type": str(m.get("target_type") or "VARCHAR"),
+                        "sensitivity_before": "PII" if str(m.get("masking_policy", "NONE")) != "NONE" else str(m.get("sensitivity", "NONE")),
+                        "masking_after": str(m.get("masking_policy") or m.get("masking_rule") or "PASSTHROUGH"),
                     }
-                    for m in (plan.get("column_mappings") or [])
+                    for m in raw_mappings
                     if isinstance(m, dict)
                 ],
                 "quality_contract": {
-                    "rules": list(qc.get("rules") or []),
+                    "rules": [
+                        {
+                            "rule_id": str(r.get("rule_id", "")),
+                            "rule_type": str(r.get("rule_type", "")),
+                            "column": r.get("column_name") or r.get("column"),
+                            "expression": str(r.get("expression") or f"{r.get('rule_type', '')} ({r.get('stage', '')})"),
+                        }
+                        for r in (qc.get("rules") or [])
+                        if isinstance(r, dict)
+                    ],
                     "restricted_sql_enabled": bool(qc.get("restricted_sql_enabled", False)),
                 },
                 "runtime_supervision_contract": {
@@ -1347,6 +1387,16 @@ def wire_application(app: FastAPI, settings: Settings | None = None) -> WiringCo
             result = container.agent_service.start(agent_ctx, req_dict)
         except TenantAccessDenied as exc:
             raise AppError(ErrorCode.TENANT_ACCESS_DENIED, str(exc)) from exc
+        except Exception as exc:
+            import urllib.error as _uerr
+
+            if isinstance(exc, (_uerr.HTTPError, _uerr.URLError, TimeoutError)):
+                raise AppError(
+                    ErrorCode.LLM_PROVIDER_UNAVAILABLE,
+                    f"外部 LLM 网关暂时不可用（已重试 3 次）：{exc}",
+                    detail={"provider": container.runtime_backends.get("llm_provider")},
+                ) from exc
+            raise
         finally:
             _active_session_var.reset(token)
 
@@ -1422,12 +1472,26 @@ def wire_application(app: FastAPI, settings: Settings | None = None) -> WiringCo
             if "answers" in payload and isinstance(payload["answers"], dict)
             else dict(payload)
         )
+        # 兼容前端文本输入框以逗号分隔填写 primary_keys / columns 的场景
+        for list_key in ("primary_keys", "columns"):
+            if isinstance(answers.get(list_key), str):
+                answers[list_key] = [x.strip() for x in answers[list_key].split(",") if x.strip()]
 
         token = _active_session_var.set(session)
         try:
             result = container.agent_service.resume(agent_ctx, answers)
         except TenantAccessDenied as exc:
             raise AppError(ErrorCode.TENANT_ACCESS_DENIED, str(exc)) from exc
+        except Exception as exc:
+            import urllib.error as _uerr
+
+            if isinstance(exc, (_uerr.HTTPError, _uerr.URLError, TimeoutError)):
+                raise AppError(
+                    ErrorCode.LLM_PROVIDER_UNAVAILABLE,
+                    f"外部 LLM 网关暂时不可用（已重试 3 次）：{exc}",
+                    detail={"provider": container.runtime_backends.get("llm_provider")},
+                ) from exc
+            raise
         finally:
             _active_session_var.reset(token)
 
@@ -1496,23 +1560,51 @@ def wire_application(app: FastAPI, settings: Settings | None = None) -> WiringCo
         src_bundle = payload.get("candidate") if isinstance(payload.get("candidate"), dict) else payload
         if isinstance(payload.get("draft"), dict):
             src_bundle = {**payload["draft"], **src_bundle}
+        cached_candidate: dict[str, Any] | None = None
         thread_id_val = src_bundle.get("thread_id") or payload.get("thread_id")
         if thread_id_val and str(thread_id_val) in container.thread_candidates:
-            cached = container.thread_candidates[str(thread_id_val)]
-            src_bundle = {**cached, **src_bundle}
-        elif not src_bundle.get("plan") and not src_bundle.get("etl_plan") and container.thread_candidates:
-            # 兼容前端直接发送 draft 表单但未显式附带 thread_id 的场景，自动回退最近候选产物
-            latest_cached = list(container.thread_candidates.values())[-1]
-            src_bundle = {**latest_cached, **src_bundle}
+            cached_candidate = container.thread_candidates[str(thread_id_val)]
+            src_bundle = {**cached_candidate, **src_bundle}
+        elif container.thread_candidates:
+            # 兼容前端直接发送 draft 表单但未显式附带 thread_id 的场景，取最近候选产物作为契约基准
+            cached_candidate = list(container.thread_candidates.values())[-1]
+            if not src_bundle.get("plan") and not src_bundle.get("etl_plan"):
+                src_bundle = {**cached_candidate, **src_bundle}
 
         plan_data = src_bundle.get("plan") or src_bundle.get("etl_plan") or src_bundle.get("etl_plan_dsl")
-        quality_data = src_bundle.get("quality_contract") or src_bundle.get("quality")
-        supervision_data = (
-            src_bundle.get("supervision_contract")
-            or src_bundle.get("supervision")
-            or default_supervision().model_dump(mode="json")
-        )
-        hocon_text = src_bundle.get("hocon") or src_bundle.get("hocon_text") or src_bundle.get("seatunnel_hocon")
+        # 若用户在 Studio Monaco 编辑器手动修改了 SQL，将其同步至 plan_data 供 sqlglot AST 沙箱真实拦截校验
+        edited_sql = src_bundle.get("sql_transformation")
+        if isinstance(plan_data, dict) and isinstance(edited_sql, str) and edited_sql.strip():
+            plan_data = {**plan_data}
+            transforms = list(plan_data.get("transformations") or [])
+            if transforms and isinstance(transforms[0], dict):
+                transforms[0] = {**transforms[0], "sql_text": edited_sql}
+                plan_data["transformations"] = transforms
+
+        raw_quality = src_bundle.get("quality_contract") or src_bundle.get("quality")
+        # 前端展示用简化 quality_contract（含 restricted_sql_enabled / 缺 schema_version）时回退至缓存的严格契约对象
+        if (
+            isinstance(raw_quality, dict)
+            and ("schema_version" not in raw_quality or "restricted_sql_enabled" in raw_quality)
+            and cached_candidate is not None
+            and isinstance(cached_candidate.get("quality_contract"), dict)
+        ):
+            quality_data = cached_candidate["quality_contract"]
+        else:
+            quality_data = raw_quality
+
+        raw_sup = src_bundle.get("supervision_contract") or src_bundle.get("supervision")
+        if (
+            isinstance(raw_sup, dict)
+            and "schema_version" not in raw_sup
+            and cached_candidate is not None
+            and isinstance(cached_candidate.get("supervision_contract"), dict)
+        ):
+            supervision_data = cached_candidate["supervision_contract"]
+        else:
+            supervision_data = raw_sup or default_supervision().model_dump(mode="json")
+
+        hocon_text = src_bundle.get("seatunnel_hocon") or src_bundle.get("hocon") or src_bundle.get("hocon_text")
 
         if not plan_data or not quality_data or not hocon_text:
             latest_draft = (

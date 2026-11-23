@@ -1,4 +1,6 @@
-# Environment & Secrets (NEVER commit real secrets or private keys)
+# ==============================================================================
+# Environment & Secrets (NEVER commit real secrets, API keys, or private keys)
+# ==============================================================================
 .env
 .env.local
 .env.*.local
@@ -11,10 +13,16 @@ infra/vault/unseal/
 secrets/local/
 !secrets/local/.gitkeep
 
+# ==============================================================================
 # Python
+# ==============================================================================
 __pycache__/
 *.py[cod]
 *$py.class
+*.egg-info/
+.eggs/
+build/
+dist/
 .venv/
 venv/
 .pytest_cache/
@@ -22,15 +30,42 @@ venv/
 .ruff_cache/
 htmlcov/
 .coverage
+coverage.xml
 
-# Node / Frontend
+# ==============================================================================
+# Node / Frontend (Vue 3 + Vite)
+# ==============================================================================
 node_modules/
 frontend/dist/
 frontend/.vite/
+frontend/coverage/
 playwright-report/
 test-results/
 
-# Local IDE / OS / Scratch
+# ==============================================================================
+# Local Docs, Tests & Internal Agent Tooling (GitHub keeps production code + README.md)
+# ==============================================================================
+docs/
+MULTI_AGENT_TASK_PROMPTS.md
+qa/
+contracts/**/*.md
+tests/
+backend/tests/
+frontend/src/__tests__/
+pytest.ini
+.open-vibecoding/
+.agents/
+.claude/
+.codex/
+.cursor/
+orbital/
+AGENTS.md
+CLAUDE.md
+GEMINI.md
+
+# ==============================================================================
+# Local IDE / OS / Runtime Data
+# ==============================================================================
 .noteriv/
 .vscode/
 .idea/
@@ -38,7 +73,5 @@ test-results/
 .DS_Store
 Thumbs.db
 b52177af-0b07-4e25-a03a-82a9688463ee.txt
-
-# Runtime generated data
 .data/
 tmp/

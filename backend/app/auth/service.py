@@ -668,6 +668,425 @@ class AuthService:
             "roles": roles,
         }
 
+    # ==================== 企业员工自助注册与管理员账号治理 ====================
+
+    @staticmethod
+    def _validate_registration_password(password: str) -> None:
+        """校验企业员工密码基本复杂度（至少 8 位且同时包含字母与数字）。"""
+        if len(password) < 8 or not any(c.isalpha() for c in password) or not any(c.isdigit() for c in password):
+            raise AppError(
+                ErrorCode.DSL_SCHEMA_INVALID,
+                "密码长度至少 8 位，且需同时包含英文字母与数字",
+            )
+
+    def register_employee(
+        self,
+        session: Session,
+        *,
+        email: str,
+        display_name: str,
+        password: str,
+        org_slug: str = "org-alpha",
+        ip_address: str = "127.0.0.1",
+        user_agent: str = "etl-agent-client",
+    ) -> dict[str, Any]:
+        """企业员工自助注册：写入真实 User + 默认组织/项目 MAKER 最小权限，并立即发送 Email OTP 挑战。"""
+        from sqlalchemy import text
+        from app.shared.db_rls import TenantContext, apply_rls_context
+
+        normalized_email = email.strip().lower()
+        clean_name = display_name.strip()
+        if "@" not in normalized_email or len(normalized_email) < 5:
+            raise AppError(ErrorCode.DSL_SCHEMA_INVALID, "请输入合法的企业邮箱地址")
+        if len(clean_name) < 2:
+            raise AppError(ErrorCode.DSL_SCHEMA_INVALID, "姓名或昵称至少需要 2 个字符")
+        self._validate_registration_password(password)
+
+        existing = session.execute(select(User).where(User.email == normalized_email)).scalar_one_or_none()
+        if existing is not None:
+            raise AppError(ErrorCode.IDEMPOTENCY_CONFLICT, f"邮箱 '{normalized_email}' 已被注册，请直接登录")
+
+        bind = session.get_bind()
+        is_pg = bind is not None and bind.dialect.name == "postgresql"
+
+        target_org_id: uuid.UUID
+        target_proj_id: uuid.UUID
+        maker_role_id: uuid.UUID
+
+        if is_pg:
+            row = session.execute(
+                text(
+                    "SELECT organization_id, project_id, role_id, role_code "
+                    "FROM resolve_default_registration_target(:slug)"
+                ),
+                {"slug": org_slug},
+            ).first()
+            if row is None:
+                raise AppError(ErrorCode.TENANT_CONTEXT_MISSING, "尚未初始化默认企业组织或项目，请联系管理员")
+            target_org_id = uuid.UUID(str(row[0]))
+            target_proj_id = uuid.UUID(str(row[1]))
+            maker_role_id = uuid.UUID(str(row[2]))
+        else:
+            org = session.execute(
+                select(Organization).where(Organization.slug == org_slug, Organization.status == "ACTIVE")
+            ).scalar_one_or_none() or session.execute(
+                select(Organization).where(Organization.status == "ACTIVE")
+            ).scalars().first()
+            if org is None:
+                raise AppError(ErrorCode.TENANT_CONTEXT_MISSING, "尚未初始化默认企业组织，请联系管理员")
+            proj = session.execute(
+                select(Project).where(Project.organization_id == org.id, Project.status == "ACTIVE")
+            ).scalars().first()
+            maker_role = session.execute(
+                select(Role).where(Role.code == "MAKER", Role.is_system.is_(True))
+            ).scalar_one_or_none()
+            if proj is None or maker_role is None:
+                raise AppError(ErrorCode.TENANT_CONTEXT_MISSING, "尚未初始化默认项目或 MAKER 角色，请联系管理员")
+            target_org_id = org.id
+            target_proj_id = proj.id
+            maker_role_id = maker_role.id
+
+        # 创建全局员工账号（密码使用 PBKDF2-HMAC-SHA256 加盐哈希）
+        user = User(
+            email=normalized_email,
+            display_name=clean_name,
+            password_hash=hash_password(password),
+            status="ACTIVE",
+            email_verified=False,
+        )
+        session.add(user)
+        session.flush()
+
+        # 在当前事务注入目标组织/项目 RLS 上下文，严格遵循 FORCE ROW LEVEL SECURITY 写入成员关系
+        apply_rls_context(
+            session,
+            TenantContext(
+                organization_id=target_org_id,
+                project_id=target_proj_id,
+                actor_id=str(user.id),
+            ),
+            require_project=True,
+        )
+        session.add(
+            OrganizationMember(
+                organization_id=target_org_id,
+                user_id=user.id,
+                org_role="MEMBER",
+                status="ACTIVE",
+            )
+        )
+        session.add(
+            ProjectMember(
+                organization_id=target_org_id,
+                project_id=target_proj_id,
+                user_id=user.id,
+                status="ACTIVE",
+            )
+        )
+        session.add(
+            MemberRoleBinding(
+                organization_id=target_org_id,
+                project_id=target_proj_id,
+                user_id=user.id,
+                role_id=maker_role_id,
+                granted_by=user.id,
+            )
+        )
+        session.flush()
+
+        # 注册成功后立即发送 Email OTP 挑战，无缝衔接前端邮件二次验证登录
+        challenge = self.login_with_password(
+            session,
+            email=normalized_email,
+            password=password,
+            ip_address=ip_address,
+            user_agent=user_agent,
+        )
+        return {
+            **challenge,
+            "user_id": str(user.id),
+            "assigned_role": "MAKER",
+            "message": "注册成功！已分配默认最小权限角色 MAKER，请前往邮箱（Mailpit）查看 6 位验证码完成登录。",
+        }
+
+    def list_org_project_users(
+        self,
+        session: Session,
+        *,
+        organization_id: uuid.UUID,
+        project_id: uuid.UUID,
+    ) -> list[dict[str, Any]]:
+        """在当前组织/项目 RLS 保护下，列出企业成员花名册、账号状态与角色绑定。"""
+        org_members = (
+            session.execute(
+                select(OrganizationMember, User)
+                .join(User, User.id == OrganizationMember.user_id)
+                .where(OrganizationMember.organization_id == organization_id)
+                .order_by(User.created_at.asc())
+            )
+            .all()
+        )
+        proj_member_ids = {
+            pm.user_id
+            for pm in session.execute(
+                select(ProjectMember).where(
+                    ProjectMember.organization_id == organization_id,
+                    ProjectMember.project_id == project_id,
+                    ProjectMember.status == "ACTIVE",
+                )
+            )
+            .scalars()
+            .all()
+        }
+        bindings = (
+            session.execute(
+                select(MemberRoleBinding, Role)
+                .join(Role, Role.id == MemberRoleBinding.role_id)
+                .where(
+                    MemberRoleBinding.organization_id == organization_id,
+                    MemberRoleBinding.project_id == project_id,
+                )
+            )
+            .all()
+        )
+        roles_by_user: dict[uuid.UUID, list[str]] = {}
+        for binding, role in bindings:
+            roles_by_user.setdefault(binding.user_id, []).append(role.code)
+
+        return [
+            {
+                "id": str(user.id),
+                "email": user.email,
+                "display_name": user.display_name,
+                "status": user.status,
+                "email_verified": user.email_verified,
+                "org_role": om.org_role,
+                "in_project": user.id in proj_member_ids,
+                "project_roles": sorted(set(roles_by_user.get(user.id, []))),
+                "created_at": user.created_at.isoformat(),
+            }
+            for om, user in org_members
+        ]
+
+    def admin_create_employee(
+        self,
+        session: Session,
+        *,
+        organization_id: uuid.UUID,
+        project_id: uuid.UUID,
+        email: str,
+        display_name: str,
+        password: str,
+        org_role: str,
+        project_role_code: str,
+        actor_user_id: uuid.UUID,
+    ) -> dict[str, Any]:
+        """管理员直接创建企业员工账号并分配组织角色与项目角色。"""
+        normalized_email = email.strip().lower()
+        clean_name = display_name.strip()
+        if "@" not in normalized_email or len(normalized_email) < 5:
+            raise AppError(ErrorCode.DSL_SCHEMA_INVALID, "请输入合法的企业邮箱地址")
+        if len(clean_name) < 2:
+            raise AppError(ErrorCode.DSL_SCHEMA_INVALID, "姓名至少需要 2 个字符")
+        self._validate_registration_password(password)
+
+        clean_org_role = org_role.strip().upper()
+        if clean_org_role not in ("MEMBER", "ORG_ADMIN"):
+            raise AppError(ErrorCode.DSL_SCHEMA_INVALID, "org_role 仅允许 MEMBER 或 ORG_ADMIN")
+        clean_proj_role = project_role_code.strip().upper()
+        if clean_proj_role not in SYSTEM_ROLE_CODES:
+            raise AppError(ErrorCode.DSL_SCHEMA_INVALID, f"无效的系统角色：{clean_proj_role}")
+
+        if session.execute(select(User).where(User.email == normalized_email)).scalar_one_or_none() is not None:
+            raise AppError(ErrorCode.IDEMPOTENCY_CONFLICT, f"邮箱 '{normalized_email}' 已存在")
+
+        role_row = session.execute(select(Role).where(Role.code == clean_proj_role)).scalar_one_or_none()
+        if role_row is None:
+            raise AppError(ErrorCode.DSL_SCHEMA_INVALID, f"角色 '{clean_proj_role}' 未初始化")
+
+        user = User(
+            email=normalized_email,
+            display_name=clean_name,
+            password_hash=hash_password(password),
+            status="ACTIVE",
+            email_verified=True,
+        )
+        session.add(user)
+        session.flush()
+
+        session.add(
+            OrganizationMember(
+                organization_id=organization_id,
+                user_id=user.id,
+                org_role=clean_org_role,
+                status="ACTIVE",
+            )
+        )
+        session.add(
+            ProjectMember(
+                organization_id=organization_id,
+                project_id=project_id,
+                user_id=user.id,
+                status="ACTIVE",
+            )
+        )
+        session.add(
+            MemberRoleBinding(
+                organization_id=organization_id,
+                project_id=project_id,
+                user_id=user.id,
+                role_id=role_row.id,
+                granted_by=actor_user_id,
+            )
+        )
+        session.flush()
+        return {
+            "id": str(user.id),
+            "email": user.email,
+            "display_name": user.display_name,
+            "status": user.status,
+            "org_role": clean_org_role,
+            "in_project": True,
+            "project_roles": [clean_proj_role],
+            "created_at": user.created_at.isoformat(),
+        }
+
+    def admin_update_user_status(
+        self,
+        session: Session,
+        *,
+        organization_id: uuid.UUID,
+        target_user_id: uuid.UUID,
+        new_status: str,
+        actor_user_id: uuid.UUID,
+    ) -> dict[str, Any]:
+        """管理员启用或禁用本组织员工账号（禁止管理员禁用自身账号，禁用同时吊销活跃会话）。"""
+        clean_status = new_status.strip().upper()
+        if clean_status not in ("ACTIVE", "DISABLED"):
+            raise AppError(ErrorCode.DSL_SCHEMA_INVALID, "账号状态仅允许 ACTIVE 或 DISABLED")
+        if target_user_id == actor_user_id and clean_status == "DISABLED":
+            raise AppError(ErrorCode.SOD_VIOLATION, "管理员不可禁用当前正在登录的自身账号")
+
+        om = session.execute(
+            select(OrganizationMember).where(
+                OrganizationMember.organization_id == organization_id,
+                OrganizationMember.user_id == target_user_id,
+            )
+        ).scalar_one_or_none()
+        user = session.get(User, target_user_id)
+        if om is None or user is None:
+            raise AppError(ErrorCode.TENANT_ACCESS_DENIED, "目标员工不属于当前组织或不存在")
+
+        user.status = clean_status
+        om.status = "ACTIVE" if clean_status == "ACTIVE" else "SUSPENDED"
+        if clean_status == "DISABLED":
+            now = datetime.now(timezone.utc)
+            active_sessions = (
+                session.execute(
+                    select(UserSession).where(
+                        UserSession.user_id == target_user_id,
+                        UserSession.revoked_at.is_(None),
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            for s in active_sessions:
+                s.revoked_at = now
+        session.flush()
+        return {"id": str(user.id), "email": user.email, "status": user.status}
+
+    def admin_update_user_roles(
+        self,
+        session: Session,
+        *,
+        organization_id: uuid.UUID,
+        project_id: uuid.UUID,
+        target_user_id: uuid.UUID,
+        org_role: str | None,
+        project_role_codes: list[str],
+        actor_user_id: uuid.UUID,
+    ) -> dict[str, Any]:
+        """管理员调整指定员工在当前组织/项目中的角色绑定。"""
+        om = session.execute(
+            select(OrganizationMember).where(
+                OrganizationMember.organization_id == organization_id,
+                OrganizationMember.user_id == target_user_id,
+            )
+        ).scalar_one_or_none()
+        user = session.get(User, target_user_id)
+        if om is None or user is None:
+            raise AppError(ErrorCode.TENANT_ACCESS_DENIED, "目标员工不属于当前组织或不存在")
+
+        if org_role:
+            clean_org_role = org_role.strip().upper()
+            if clean_org_role not in ("MEMBER", "ORG_ADMIN"):
+                raise AppError(ErrorCode.DSL_SCHEMA_INVALID, "org_role 仅允许 MEMBER 或 ORG_ADMIN")
+            om.org_role = clean_org_role
+
+        clean_codes = sorted({c.strip().upper() for c in project_role_codes if c.strip()})
+        if not clean_codes:
+            raise AppError(ErrorCode.DSL_SCHEMA_INVALID, "至少需要分配一个项目角色")
+        invalid = [c for c in clean_codes if c not in SYSTEM_ROLE_CODES]
+        if invalid:
+            raise AppError(ErrorCode.DSL_SCHEMA_INVALID, f"包含无效系统角色：{invalid}")
+
+        # 确保用户属于当前项目成员
+        pm = session.execute(
+            select(ProjectMember).where(
+                ProjectMember.organization_id == organization_id,
+                ProjectMember.project_id == project_id,
+                ProjectMember.user_id == target_user_id,
+            )
+        ).scalar_one_or_none()
+        if pm is None:
+            session.add(
+                ProjectMember(
+                    organization_id=organization_id,
+                    project_id=project_id,
+                    user_id=target_user_id,
+                    status="ACTIVE",
+                )
+            )
+        else:
+            pm.status = "ACTIVE"
+
+        # 替换当前项目下的角色绑定
+        old_bindings = (
+            session.execute(
+                select(MemberRoleBinding).where(
+                    MemberRoleBinding.organization_id == organization_id,
+                    MemberRoleBinding.project_id == project_id,
+                    MemberRoleBinding.user_id == target_user_id,
+                )
+            )
+            .scalars()
+            .all()
+        )
+        for b in old_bindings:
+            session.delete(b)
+        session.flush()
+
+        for code in clean_codes:
+            role_row = session.execute(select(Role).where(Role.code == code)).scalar_one_or_none()
+            if role_row is not None:
+                session.add(
+                    MemberRoleBinding(
+                        organization_id=organization_id,
+                        project_id=project_id,
+                        user_id=target_user_id,
+                        role_id=role_row.id,
+                        granted_by=actor_user_id,
+                    )
+                )
+        session.flush()
+        return {
+            "id": str(user.id),
+            "email": user.email,
+            "org_role": om.org_role,
+            "project_roles": clean_codes,
+        }
+
 
 def seed_demo_iam_data(
     session: Session,
