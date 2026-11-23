@@ -173,8 +173,8 @@ watch(
         <Card
           v-for="prep in preparations"
           :key="prep.id"
-          :title="`Preparation ${prep.id.slice(0, 8)} · ${prep.preparation_type}`"
-          :subtitle="`环境: ${prep.environment.toUpperCase()} · 指纹: ${prep.input_fingerprint.slice(0, 16)}…`"
+          :title="`Preparation ${(prep.id || '').slice(0, 8)} · ${prep.preparation_type}`"
+          :subtitle="`环境: ${(prep.environment || 'prod').toUpperCase()} · 指纹: ${(prep.input_fingerprint || '').slice(0, 16)}…`"
         >
           <template #header>
             <div class="flex items-center gap-2">
@@ -193,8 +193,8 @@ watch(
           </template>
 
           <div class="flex flex-wrap gap-3 text-xs text-muted-foreground">
-            <span>数据分级: {{ prep.data_classification }}</span>
-            <span>资源范围: {{ prep.resource_scope.join(', ') }}</span>
+            <span>数据分级: {{ prep.data_classification || 'CONFIDENTIAL' }}</span>
+            <span>资源范围: {{ (prep.resource_scope || []).join(', ') || '-' }}</span>
             <span>发起人: {{ prep.created_by }}</span>
           </div>
         </Card>
@@ -247,9 +247,9 @@ watch(
           <div>输入指纹: {{ selectedPrep.input_fingerprint }}</div>
           <div>制品 SHA256: {{ selectedPrep.artifact_sha256 }}</div>
           <div>Metadata Snapshot: {{ selectedPrep.metadata_snapshot_id }}</div>
-          <div>资源范围: {{ selectedPrep.resource_scope.join(', ') }}</div>
-          <div>数据分级: {{ selectedPrep.data_classification }}</div>
-          <div>Secret 引用: {{ selectedPrep.secret_refs.join(', ') }}</div>
+          <div>资源范围: {{ (selectedPrep.resource_scope || []).join(', ') || '-' }}</div>
+          <div>数据分级: {{ selectedPrep.data_classification || 'CONFIDENTIAL' }}</div>
+          <div>Secret 引用: {{ (selectedPrep.secret_refs || []).join(', ') || '-' }}</div>
           <div>预算摘要: {{ JSON.stringify(selectedPrep.budget_summary) }}</div>
           <div>回滚方案: {{ selectedPrep.rollback_plan }}</div>
         </div>

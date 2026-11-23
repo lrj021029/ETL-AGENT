@@ -650,6 +650,8 @@ class ConnectionService:
         return {
             "connection_id": str(conn.id),
             "status": conn.last_health_status,
+            "reachable": conn.last_health_status == "HEALTHY",
+            "message": "只读连通性探活通过" if conn.last_health_status == "HEALTHY" else "连接探活未通过",
             "checked_at": now.isoformat(),
             "read_only_verified": True,
         }
@@ -736,7 +738,41 @@ class ConnectionService:
         secret_version: int = 1,
         masked_preview: str = "******",
     ) -> dict[str, Any]:
-        """序列化连接对象，保证绝对不返回任何凭据明文。"""
+        """序列化连接对象，保证绝对不返回任何凭据明文，并同时兼容后端契约与前端控制台字段。"""
+        safe_cfg = redact_sensitive_value(conn.config_non_secret_json)
+        cfg_dict = safe_cfg if isinstance(safe_cfg, dict) else {}
+        host = cfg_dict.get("host") or cfg_dict.get("endpoint") or "127.0.0.1"
+        port = cfg_dict.get("port")
+        database = cfg_dict.get("database") or cfg_dict.get("bucket") or ""
+        host_summary = f"{host}:{port}" if port is not None else str(host)
+        if database:
+            host_summary = f"{host_summary}/{database}"
+
+        health_upper = (conn.last_health_status or "UNCHECKED").upper()
+        if health_upper in ("HEALTHY", "OK"):
+            last_test_status = "OK"
+        elif health_upper in ("UNHEALTHY", "FAILED"):
+            last_test_status = "FAILED"
+        else:
+            last_test_status = "UNTESTED"
+
+        raw_ct = (conn.connection_type or "").lower()
+        cid_low = (conn.connector_id or "").lower()
+        if raw_ct in ("source", "sink", ""):
+            if "mysql" in cid_low:
+                display_connector_type = "mysql"
+            elif "doris" in cid_low:
+                display_connector_type = "doris"
+            elif "postgres" in cid_low:
+                display_connector_type = "postgres"
+            elif "minio" in cid_low or "s3" in cid_low:
+                display_connector_type = "minio"
+            else:
+                display_connector_type = cid_low or raw_ct or "unknown"
+        else:
+            display_connector_type = raw_ct
+
+        secret_masked = masked_preview if conn.secret_ref_id else "未配置凭据"
         return {
             "id": str(conn.id),
             "organization_id": str(conn.organization_id),
@@ -744,14 +780,22 @@ class ConnectionService:
             "name": conn.name,
             "connector_id": conn.connector_id,
             "connection_type": conn.connection_type,
-            "config_non_secret_json": redact_sensitive_value(conn.config_non_secret_json),
+            "connector_type": display_connector_type,
+            "environment": str(cfg_dict.get("environment") or "prod"),
+            "host_summary": host_summary,
+            "config_non_secret_json": safe_cfg,
             "secret_ref_id": str(conn.secret_ref_id) if conn.secret_ref_id else None,
+            "secret_ref": f"vault://secret-ref/{conn.secret_ref_id}" if conn.secret_ref_id else "",
             "secret_version": secret_version,
             "secret_masked_preview": masked_preview if conn.secret_ref_id else None,
+            "secret_masked": secret_masked,
             "current_version": conn.current_version,
             "status": conn.status,
+            "enabled": conn.status == "ACTIVE",
             "last_health_status": conn.last_health_status,
+            "last_test_status": last_test_status,
             "last_checked_at": conn.last_checked_at.isoformat() if conn.last_checked_at else None,
+            "last_tested_at": conn.last_checked_at.isoformat() if conn.last_checked_at else None,
             "created_by": str(conn.created_by),
             "created_at": conn.created_at.isoformat(),
         }

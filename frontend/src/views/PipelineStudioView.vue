@@ -27,6 +27,8 @@ const errorInfo = ref<{ code: string; message: string; traceId: string } | null>
 const connections = ref<ConnectionItem[]>([])
 const pipelines = ref<PipelineItem[]>([])
 const selectedPipelineId = ref<string>('')
+const newPipelineName = ref('')
+const creatingPipeline = ref(false)
 const sourceConnId = ref<string>('')
 const sinkConnId = ref<string>('')
 const executionMode = ref<'BATCH' | 'CDC'>('BATCH')
@@ -162,25 +164,78 @@ async function handleResumeAgent(): Promise<void> {
   }
 }
 
+async function handleCreatePipeline(): Promise<void> {
+  const projectId = auth.activeProject?.id
+  if (!projectId || !sourceConnId.value || !sinkConnId.value) return
+  const name = newPipelineName.value.trim() || `orders-sync-${Date.now().toString().slice(-4)}`
+  creatingPipeline.value = true
+  actionMessage.value = null
+  try {
+    const created = await api.createPipeline(projectId, {
+      name,
+      description: '由 Pipeline Studio 创建的受管同步流水线',
+      source_connection_id: sourceConnId.value,
+      sink_connection_id: sinkConnId.value,
+      execution_mode: executionMode.value,
+    })
+    pipelines.value = [created, ...pipelines.value]
+    selectedPipelineId.value = created.id
+    newPipelineName.value = ''
+    actionMessage.value = `已创建 Pipeline「${created.name}」，可继续执行 LangGraph 生成与门禁冻结。`
+  } catch (err) {
+    actionMessage.value = err instanceof ApiClientError ? `${err.errorCode}: ${err.message}` : String(err)
+  } finally {
+    creatingPipeline.value = false
+  }
+}
+
 async function handleRunDeterministicGate(): Promise<void> {
   const projectId = auth.activeProject?.id
   if (!projectId || !selectedPipelineId.value) {
-    actionMessage.value = '请先选择或创建 Pipeline 定义后再执行确定性门禁校验。'
+    actionMessage.value = '请先选择或新建一个 Pipeline 定义后再执行确定性门禁校验。'
     return
   }
-  const report = await api.validateDraft(projectId, selectedPipelineId.value, draft.value)
-  gateReport.value = report
+  actionMessage.value = null
+  try {
+    const report = await api.validateDraft(projectId, selectedPipelineId.value, draft.value)
+    gateReport.value = report
+    actionMessage.value = report.passed
+      ? '确定性门禁 5 项校验全部通过，可执行版本冻结！'
+      : '确定性门禁未通过，请根据下方失败原因修复后再校验。'
+  } catch (err) {
+    actionMessage.value = err instanceof ApiClientError ? `${err.errorCode}: ${err.message}` : String(err)
+  }
 }
 
 async function handleFreezeVersion(): Promise<void> {
   const projectId = auth.activeProject?.id
   if (!projectId || !selectedPipelineId.value) return
-  const frozen = await api.freezePipelineVersion(projectId, selectedPipelineId.value, {
-    draft: draft.value,
-    comment: 'Studio 确定性门禁通过后冻结版本',
-  })
-  frozenVersion.value = frozen
-  actionMessage.value = `已冻结不可变版本 v${frozen.version_number} (SHA256: ${frozen.sha256_digest.slice(0, 16)}…)`
+  actionMessage.value = null
+  try {
+    const frozen = await api.freezePipelineVersion(projectId, selectedPipelineId.value, {
+      draft: draft.value,
+      comment: 'Studio 确定性门禁通过后冻结版本',
+    })
+    frozenVersion.value = frozen
+    actionMessage.value = `已冻结不可变版本 v${frozen.version_number} (SHA256: ${(frozen.sha256_digest || '').slice(0, 16)}…)`
+  } catch (err) {
+    actionMessage.value = err instanceof ApiClientError ? `${err.errorCode}: ${err.message}` : String(err)
+  }
+}
+
+async function handleCreatePreparation(): Promise<void> {
+  const projectId = auth.activeProject?.id
+  if (!projectId || !frozenVersion.value) return
+  actionMessage.value = null
+  try {
+    const prep = await api.createPreparation(projectId, {
+      pipeline_version_id: frozenVersion.value.id,
+      preparation_type: 'EXECUTION',
+    })
+    actionMessage.value = `已发起 Harness Preparation (${prep.id.slice(0, 8)} · 风险等级 ${prep.risk_level} · 状态 ${prep.status})，请前往「审批控制台与 Preparation」完成双人审批与 Operator Commit！`
+  } catch (err) {
+    actionMessage.value = err instanceof ApiClientError ? `${err.errorCode}: ${err.message}` : String(err)
+  }
 }
 
 async function handleCreateSchedule(): Promise<void> {
@@ -254,6 +309,21 @@ watch(
                 <option value="">-- 选择 Pipeline --</option>
                 <option v-for="p in pipelines" :key="p.id" :value="p.id">{{ p.name }}</option>
               </select>
+              <div class="mt-1.5 flex gap-1.5">
+                <input
+                  v-model="newPipelineName"
+                  placeholder="新 Pipeline 名称（如 mysql-to-doris-orders）"
+                  class="flex-1 rounded border bg-background px-2 py-1 text-xs"
+                />
+                <button
+                  type="button"
+                  :disabled="creatingPipeline || !sourceConnId || !sinkConnId"
+                  class="rounded border border-primary/40 bg-primary/10 px-2.5 py-1 text-xs font-medium text-primary hover:bg-primary/20 disabled:opacity-40"
+                  @click="handleCreatePipeline"
+                >
+                  {{ creatingPipeline ? '创建中…' : '+ 新建' }}
+                </button>
+              </div>
             </div>
 
             <div class="grid grid-cols-2 gap-2">
@@ -484,7 +554,14 @@ watch(
               <div class="break-all">SHA256: {{ frozenVersion.sha256_digest }}</div>
               <button
                 type="button"
-                class="mt-2 w-full rounded border px-2 py-1 font-sans text-xs hover:bg-accent"
+                class="mt-2 w-full rounded bg-primary px-2 py-1.5 font-sans text-xs font-medium text-primary-foreground hover:opacity-90"
+                @click="handleCreatePreparation"
+              >
+                发起 Harness Prepare 审批单
+              </button>
+              <button
+                type="button"
+                class="mt-1.5 w-full rounded border px-2 py-1 font-sans text-xs hover:bg-accent"
                 @click="scheduleModalOpen = true"
               >
                 配置受管 Schedule

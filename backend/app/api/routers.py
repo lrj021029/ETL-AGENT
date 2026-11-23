@@ -136,10 +136,13 @@ class CreateCustomRoleRequest(BaseModel):
 
 class CreateConnectionRequest(BaseModel):
     name: str = Field(..., min_length=1, max_length=128)
-    connector_id: str = Field(..., min_length=1, max_length=128)
-    connection_type: str = Field(..., min_length=1, max_length=64)
+    connector_id: str | None = Field(default=None, max_length=128)
+    connection_type: str | None = Field(default=None, max_length=64)
+    connector_type: str | None = Field(default=None, max_length=64)
+    environment: str | None = None
     config: dict[str, Any] = Field(default_factory=dict)
     secret_payload: dict[str, Any] | None = None
+    secret_ref: str | None = None
 
 
 class MetadataProbeRequest(BaseModel):
@@ -148,9 +151,11 @@ class MetadataProbeRequest(BaseModel):
 
 
 class PatchClassificationRequest(BaseModel):
-    object_id: uuid.UUID
+    object_id: uuid.UUID | None = None
+    table_name: str | None = None
     column_name: str
-    classification_level: str
+    classification_level: str | None = None
+    sensitivity_tag: str | None = None
     pii_category: str | None = None
 
 
@@ -534,16 +539,35 @@ def create_connection(
     session: Session = Depends(get_db_session),
     connection_service: ConnectionService = Depends(get_connection_service),
 ) -> dict[str, Any]:
-    """创建受管数据源连接并托管 SecretProvider 引用。"""
+    """创建受管数据源连接并托管 SecretProvider 引用（兼容前后端连接器类型字段）。"""
+    connector_map = {
+        "mysql": ("mysql-jdbc", "MYSQL"),
+        "postgres": ("postgres-jdbc", "POSTGRES"),
+        "postgresql": ("postgres-jdbc", "POSTGRES"),
+        "doris": ("doris-sink", "DORIS"),
+        "minio": ("s3-minio-file", "MINIO"),
+        "s3": ("s3-minio-file", "MINIO"),
+        "rest_api": ("http-rest", "REST_API"),
+    }
+    raw_type = (payload.connection_type or payload.connector_type or "mysql").strip()
+    mapped_cid, mapped_ctype = connector_map.get(raw_type.lower(), (raw_type.lower(), raw_type.upper()))
+    resolved_connector_id = (payload.connector_id or mapped_cid).strip()
+    resolved_connection_type = (payload.connection_type or mapped_ctype).strip().upper()
+    cfg = dict(payload.config or {})
+    if payload.environment and "environment" not in cfg:
+        cfg["environment"] = payload.environment
+    secret_payload = payload.secret_payload
+    if secret_payload is None and payload.secret_ref:
+        secret_payload = {"secret_ref": payload.secret_ref}
     return connection_service.create_connection(
         session,
         organization_id=ctx.organization_id,
         project_id=ctx.project_id,
         name=payload.name,
-        connector_id=payload.connector_id,
-        connection_type=payload.connection_type,
-        config=payload.config,
-        secret_payload=payload.secret_payload,
+        connector_id=resolved_connector_id,
+        connection_type=resolved_connection_type,
+        config=cfg,
+        secret_payload=secret_payload,
         actor_user_id=ctx.principal.user_id,
     )
 
@@ -669,15 +693,17 @@ def patch_metadata_classification(
     session: Session = Depends(get_db_session),
     metadata_service: MetadataService = Depends(get_metadata_service),
 ) -> dict[str, Any]:
-    """人工标记或调整敏感字段分类。"""
+    """人工标记或调整敏感字段分类（同时支持 object_id 与 table_name+sensitivity_tag）。"""
+    level = payload.classification_level or payload.sensitivity_tag or "PUBLIC"
     return metadata_service.update_manual_classification(
         session,
         organization_id=ctx.organization_id,
         project_id=ctx.project_id,
         snapshot_id=snapshot_id,
         object_id=payload.object_id,
+        table_name=payload.table_name,
         column_name=payload.column_name,
-        classification_level=payload.classification_level,
+        classification_level=level,
         pii_category=payload.pii_category,
         actor_user_id=ctx.principal.user_id,
     )
@@ -724,9 +750,11 @@ def list_executions(
     return {
         "items": [
             {
+                "id": str(r.id),
                 "execution_id": str(r.id),
                 "pipeline_id": str(r.pipeline_id),
                 "pipeline_version_id": str(r.pipeline_version_id),
+                "preparation_id": str(r.preparation_id),
                 "artifact_hash": r.artifact_hash,
                 "execution_mode": r.execution_mode,
                 "status": r.status,
@@ -789,6 +817,7 @@ def get_execution_detail(
         }
 
     return {
+        "id": str(run.id),
         "execution_id": str(run.id),
         "organization_id": str(run.organization_id),
         "project_id": str(run.project_id),
@@ -994,6 +1023,7 @@ def cancel_execution(
     )
     session.flush()
     return {
+        "id": str(run.id),
         "execution_id": str(run.id),
         "status": run.status,
         "confirmation_state": "REQUEST_SUBMITTED",
@@ -1040,6 +1070,7 @@ def reconcile_execution(
     )
     session.flush()
     return {
+        "id": str(run.id),
         "execution_id": str(run.id),
         "status": run.status,
         "confirmation_state": "RECONCILIATION_PENDING",
@@ -1269,9 +1300,11 @@ def list_pipelines_hook(
                 "name": p.name,
                 "description": p.description,
                 "sync_mode": p.sync_mode,
+                "execution_mode": "CDC" if "CDC" in p.sync_mode.upper() else "BATCH",
                 "source_connection_id": str(p.source_connection_id),
                 "sink_connection_id": str(p.sink_connection_id),
                 "latest_revision": p.latest_revision,
+                "latest_version": f"v{p.latest_revision}" if p.latest_revision else None,
                 "created_at": p.created_at.isoformat(),
             }
             for p in rows
@@ -1289,13 +1322,16 @@ def create_pipeline_hook(
     ctx: ProjectRequestContext = Depends(require_project_context),
     session: Session = Depends(get_db_session),
 ) -> dict[str, Any]:
-    """创建新的 PipelineDefinition。"""
+    """创建新的 PipelineDefinition（兼容 sync_mode 与 execution_mode）。"""
+    exec_mode = str(payload.get("execution_mode") or "").upper()
+    default_sync = "CDC" if exec_mode == "CDC" else "FULL_LOAD"
+    sync_mode = str(payload.get("sync_mode") or default_sync)
     pipe = PipelineDefinition(
         organization_id=ctx.organization_id,
         project_id=ctx.project_id,
         name=str(payload["name"]),
         description=str(payload.get("description", "")),
-        sync_mode=str(payload.get("sync_mode", "FULL_LOAD")),
+        sync_mode=sync_mode,
         source_connection_id=uuid.UUID(str(payload["source_connection_id"])),
         sink_connection_id=uuid.UUID(str(payload["sink_connection_id"])),
         latest_revision=0,
@@ -1303,7 +1339,16 @@ def create_pipeline_hook(
     )
     session.add(pipe)
     session.flush()
-    return {"id": str(pipe.id), "name": pipe.name, "sync_mode": pipe.sync_mode}
+    return {
+        "id": str(pipe.id),
+        "name": pipe.name,
+        "description": pipe.description,
+        "sync_mode": pipe.sync_mode,
+        "execution_mode": "CDC" if "CDC" in pipe.sync_mode.upper() else "BATCH",
+        "source_connection_id": str(pipe.source_connection_id),
+        "sink_connection_id": str(pipe.sink_connection_id),
+        "created_at": pipe.created_at.isoformat(),
+    }
 
 
 @extension_hooks_router.post(
@@ -1410,6 +1455,85 @@ def get_pipeline_manifest_hook(
     }
 
 
+def _serialize_preparation_with_slots(session: Session, p: Preparation) -> dict[str, Any]:
+    """序列化 Preparation 并附带关联的审批槽位与历史决策，兼容前后端全部字段。"""
+    slots = (
+        session.execute(
+            select(ApprovalSlot).where(
+                ApprovalSlot.organization_id == p.organization_id,
+                ApprovalSlot.project_id == p.project_id,
+                ApprovalSlot.preparation_id == p.id,
+            )
+        )
+        .scalars()
+        .all()
+    )
+    decisions = (
+        session.execute(
+            select(ApprovalDecision).where(
+                ApprovalDecision.organization_id == p.organization_id,
+                ApprovalDecision.project_id == p.project_id,
+                ApprovalDecision.preparation_id == p.id,
+            )
+        )
+        .scalars()
+        .all()
+    )
+    dec_by_slot = {d.slot_id: d for d in decisions}
+    approval_slots_list = []
+    for s in slots:
+        dec = dec_by_slot.get(s.id)
+        approval_slots_list.append(
+            {
+                "id": str(s.id),
+                "slot_role": s.slot_role,
+                "slot_type": s.slot_role,
+                "required": s.required,
+                "status": s.status,
+                "decided_by": str(dec.approver_id) if dec else None,
+                "decided_by_name": str(dec.approver_id) if dec else None,
+                "decided_at": dec.decided_at.isoformat() if dec else None,
+                "reason": dec.reason if dec else None,
+            }
+        )
+
+    frozen = p.frozen_facts_json or {}
+    raw_scope = frozen.get("resource_scope") or frozen.get("target_tables") or []
+    resource_scope = [str(x) for x in raw_scope] if isinstance(raw_scope, list) else [str(raw_scope)]
+    raw_secrets = frozen.get("secret_refs") or []
+    secret_refs = [str(x) for x in raw_secrets] if isinstance(raw_secrets, list) else [str(raw_secrets)]
+    rb_plan = p.rollback_plan_json or {}
+    rb_text = rb_plan.get("strategy") or json.dumps(rb_plan, ensure_ascii=False)
+
+    return {
+        "id": str(p.id),
+        "preparation_type": p.preparation_type,
+        "pipeline_id": str(p.pipeline_id),
+        "pipeline_version_id": str(p.pipeline_version_id),
+        "artifact_hash": p.artifact_hash,
+        "artifact_sha256": p.artifact_hash,
+        "metadata_snapshot_id": str(frozen.get("metadata_snapshot_id") or ""),
+        "environment": p.environment,
+        "risk_level": p.risk_level,
+        "policy_version": p.policy_version,
+        "status": p.status,
+        "frozen_facts_json": frozen,
+        "rollback_plan_json": rb_plan,
+        "rollback_plan": str(rb_text),
+        "budget_json": p.budget_json or {},
+        "budget_summary": p.budget_json or {},
+        "fingerprint_sha256": p.fingerprint_sha256,
+        "input_fingerprint": p.fingerprint_sha256,
+        "resource_scope": resource_scope,
+        "data_classification": str(frozen.get("data_classification") or "CONFIDENTIAL"),
+        "secret_refs": secret_refs,
+        "approval_slots": approval_slots_list,
+        "created_by": str(p.created_by),
+        "created_at": p.created_at.isoformat(),
+        "expires_at": p.expires_at.isoformat(),
+    }
+
+
 @extension_hooks_router.get("/api/v1/projects/{project_id}/preparations", tags=["Preparation"])
 def list_preparations_hook(
     ctx: ProjectRequestContext = Depends(require_project_context),
@@ -1418,31 +1542,17 @@ def list_preparations_hook(
     """列出项目内的 Harness Preparation 准备单。"""
     rows = (
         session.execute(
-            select(Preparation).where(
+            select(Preparation)
+            .where(
                 Preparation.organization_id == ctx.organization_id,
                 Preparation.project_id == ctx.project_id,
             )
+            .order_by(Preparation.created_at.desc())
         )
         .scalars()
         .all()
     )
-    return {
-        "items": [
-            {
-                "id": str(p.id),
-                "preparation_type": p.preparation_type,
-                "pipeline_id": str(p.pipeline_id),
-                "pipeline_version_id": str(p.pipeline_version_id),
-                "artifact_hash": p.artifact_hash,
-                "risk_level": p.risk_level,
-                "status": p.status,
-                "fingerprint_sha256": p.fingerprint_sha256,
-                "created_by": str(p.created_by),
-                "expires_at": p.expires_at.isoformat(),
-            }
-            for p in rows
-        ]
-    }
+    return {"items": [_serialize_preparation_with_slots(session, p) for p in rows]}
 
 
 @extension_hooks_router.post(
@@ -1498,27 +1608,11 @@ def get_preparation_detail_hook(
     ctx: ProjectRequestContext = Depends(require_project_context),
     session: Session = Depends(get_db_session),
 ) -> dict[str, Any]:
-    """查看冻结的 Preparation 准备单事实与指纹。"""
+    """查看冻结的 Preparation 准备单事实、审批槽位与指纹。"""
     prep = session.get(Preparation, preparation_id)
     if prep is None or prep.organization_id != ctx.organization_id or prep.project_id != ctx.project_id:
         raise AppError(ErrorCode.TENANT_ACCESS_DENIED, "Preparation 不存在")
-    return {
-        "id": str(prep.id),
-        "preparation_type": prep.preparation_type,
-        "pipeline_id": str(prep.pipeline_id),
-        "pipeline_version_id": str(prep.pipeline_version_id),
-        "artifact_hash": prep.artifact_hash,
-        "environment": prep.environment,
-        "risk_level": prep.risk_level,
-        "policy_version": prep.policy_version,
-        "status": prep.status,
-        "frozen_facts_json": prep.frozen_facts_json,
-        "rollback_plan_json": prep.rollback_plan_json,
-        "budget_json": prep.budget_json,
-        "fingerprint_sha256": prep.fingerprint_sha256,
-        "created_by": str(prep.created_by),
-        "expires_at": prep.expires_at.isoformat(),
-    }
+    return _serialize_preparation_with_slots(session, prep)
 
 
 @extension_hooks_router.get(
@@ -1842,14 +1936,20 @@ def list_evidence_events_hook(
             {
                 "id": str(e.id),
                 "sequence_no": e.sequence_no,
+                "seq": e.sequence_no,
                 "timestamp": e.timestamp,
+                "created_at": e.timestamp,
                 "actor": e.actor,
+                "actor_id": e.actor,
                 "event_type": e.event_type,
                 "resource_ref": e.resource_ref,
                 "artifact_hash": e.artifact_hash,
                 "payload_digest": e.payload_digest,
                 "previous_hash": e.previous_hash,
+                "prev_hash": e.previous_hash,
                 "event_hash": e.event_hash,
+                "sha256_hash": e.event_hash,
+                "summary": f"{e.event_type} ({e.resource_ref})",
             }
             for e in rows
         ]
@@ -1880,9 +1980,14 @@ def list_evidence_checkpoints_hook(
                 "id": str(c.id),
                 "from_sequence": c.from_sequence,
                 "to_sequence": c.to_sequence,
+                "from_seq": c.from_sequence,
+                "to_seq": c.to_sequence,
                 "head_event_hash": c.head_event_hash,
+                "merkle_or_chain_root": c.head_event_hash,
                 "signing_key_id": c.signing_key_id,
+                "key_id": c.signing_key_id,
                 "signature_b64url": c.signature_b64url,
+                "ed25519_signature": c.signature_b64url,
                 "signed_at": c.signed_at.isoformat(),
             }
             for c in rows
@@ -1926,8 +2031,10 @@ def list_benchmark_datasets_hook(
                 "name": d.name,
                 "version": d.version,
                 "row_tier": d.row_tier,
+                "scale": d.row_tier,
                 "seed": d.seed,
                 "manifest_sha256": d.manifest_sha256,
+                "created_at": d.created_at.isoformat(),
             }
             for d in rows
         ]
@@ -1986,12 +2093,23 @@ def list_benchmark_runs_hook(
                 "id": str(r.id),
                 "dataset_id": str(r.dataset_id),
                 "layer": r.layer,
+                "level": r.layer,
+                "model_name": "DeterministicMock" if r.is_mock_llm else "deepseek-v4.1-flash-free",
+                "policy_version": "v1.0.0",
                 "is_mock_llm": r.is_mock_llm,
                 "p0_passed": r.p0_passed,
                 "p1_passed": r.p1_passed,
+                "p0_p1_hard_gate_passed": bool(r.p0_passed and r.p1_passed),
+                "p0_block_rate": float((r.raw_metrics_json or {}).get("p0_block_rate", 1.0 if r.p0_passed else 0.0)),
                 "overall_passed": r.overall_passed,
-                "raw_metrics": r.raw_metrics_json,
+                "overall_verdict": "PASSED" if r.overall_passed else "FAILED",
+                "raw_metrics": {
+                    "plan_validity": float((r.raw_metrics_json or {}).get("plan_validity_rate", (r.raw_metrics_json or {}).get("plan_validity", 0.0))),
+                    "sql_safety_detection": float((r.raw_metrics_json or {}).get("sql_safety_detection_rate", (r.raw_metrics_json or {}).get("sql_safety_detection", 0.0))),
+                    **(r.raw_metrics_json or {}),
+                },
                 "composite_scores": r.composite_scores_json,
+                "composite_score": float((r.composite_scores_json or {}).get("composite_score", 0.0)),
                 "scoring_profile_version": r.scoring_profile_version,
             }
             for r in rows
@@ -2047,9 +2165,11 @@ def list_policies_hook(
         "items": [
             {
                 "id": str(p.id),
+                "version": p.version_tag,
                 "version_tag": p.version_tag,
                 "rules_hash": p.rules_hash,
                 "rules_json": p.rules_json,
+                "created_by": str(p.approved_by) if p.approved_by else "system",
                 "created_at": p.created_at.isoformat(),
             }
             for p in rows

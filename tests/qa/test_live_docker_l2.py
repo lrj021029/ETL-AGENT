@@ -187,7 +187,7 @@ def test_l2_live_postgres_alembic_and_five_mandatory_rls_attacks() -> None:
 
         # 在 proj-orders-prod 下创建一条数据源连接供跨项目 RLS 负向验证
         conn_svc = ConnectionService()
-        conn_svc.create_connection(
+        created_rls_conn = conn_svc.create_connection(
             m_sess,
             organization_id=org_alpha_id,
             project_id=proj_alpha_1_id,
@@ -198,6 +198,7 @@ def test_l2_live_postgres_alembic_and_five_mandatory_rls_attacks() -> None:
             secret_payload={"password": "top-secret-password"},
             actor_user_id=maker_id,
         )
+        rls_conn_id = uuid.UUID(created_rls_conn["id"])
 
         # 创建一条 ExecutionRun + ExecutionCommand 供 resolve_execution_tenant_context 验证
         cmd_id = uuid.uuid4()
@@ -347,6 +348,16 @@ def test_l2_live_postgres_alembic_and_five_mandatory_rls_attacks() -> None:
                 assert exc_info.value.error_code == ErrorCode.TENANT_CONTEXT_MISSING.value
     finally:
         runtime_engine.dispose()
+        # 清理本用例写入的临时连接与临时执行记录，避免污染在线演示库统计指标
+        cleanup_engine = create_engine(migrator_url, pool_pre_ping=True, future=True)
+        try:
+            with cleanup_engine.begin() as c_conn:
+                c_conn.execute(text("DELETE FROM connection_versions WHERE connection_id = :cid"), {"cid": rls_conn_id})
+                c_conn.execute(text("DELETE FROM data_connections WHERE id = :cid"), {"cid": rls_conn_id})
+                c_conn.execute(text("DELETE FROM execution_commands WHERE command_id = :cmd_id"), {"cmd_id": cmd_id})
+                c_conn.execute(text("DELETE FROM execution_runs WHERE id = :eid"), {"eid": exec_id})
+        finally:
+            cleanup_engine.dispose()
 
 
 # ==============================================================================

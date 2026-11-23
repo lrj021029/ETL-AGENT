@@ -128,21 +128,34 @@ async function selectConnection(conn: ConnectionItem): Promise<void> {
   const projectId = auth.activeProject?.id
   if (!projectId) return
   selectedConnection.value = conn
-  const [snapRes, driftRes] = await Promise.all([
-    api.listMetadataSnapshots(projectId, conn.id),
-    api.getSchemaDrift(projectId, conn.id),
-  ])
-  snapshots.value = snapRes.items
-  selectedSnapshotId.value = snapRes.items[0]?.id || ''
-  driftEvents.value = driftRes.items
+  actionFeedback.value = null
+  try {
+    const [snapRes, driftRes] = await Promise.all([
+      api.listMetadataSnapshots(projectId, conn.id),
+      api.getSchemaDrift(projectId, conn.id),
+    ])
+    snapshots.value = snapRes.items || []
+    selectedSnapshotId.value = snapshots.value[0]?.id || ''
+    driftEvents.value = driftRes.items || []
+  } catch (err) {
+    actionFeedback.value = err instanceof ApiClientError ? `${err.errorCode}: ${err.message}` : String(err)
+  }
 }
 
 async function handleProbeMetadata(): Promise<void> {
   const projectId = auth.activeProject?.id
   if (!projectId || !selectedConnection.value) return
-  const snap = await api.probeMetadata(projectId, selectedConnection.value.id)
-  snapshots.value = [snap, ...snapshots.value]
-  selectedSnapshotId.value = snap.id
+  actionFeedback.value = '正在执行受管只读 Metadata Probe…'
+  try {
+    const snap = await api.probeMetadata(projectId, selectedConnection.value.id)
+    snapshots.value = [snap, ...snapshots.value]
+    selectedSnapshotId.value = snap.id
+    const driftRes = await api.getSchemaDrift(projectId, selectedConnection.value.id)
+    driftEvents.value = driftRes.items || []
+    actionFeedback.value = `只读探查成功：共发现 ${snap.tables?.length ?? 0} 张表，Schema 指纹 ${(snap.schema_fingerprint || '').slice(0, 16)}…`
+  } catch (err) {
+    actionFeedback.value = err instanceof ApiClientError ? `${err.errorCode}: ${err.message}` : String(err)
+  }
 }
 
 async function handleTagSensitivity(
@@ -152,13 +165,18 @@ async function handleTagSensitivity(
 ): Promise<void> {
   const projectId = auth.activeProject?.id
   if (!projectId || !activeSnapshot.value) return
-  const updated = await api.updateColumnClassification(projectId, activeSnapshot.value.id, {
-    table_name: tableName,
-    column_name: columnName,
-    sensitivity_tag: tag,
-  })
-  const idx = snapshots.value.findIndex((s) => s.id === updated.id)
-  if (idx >= 0) snapshots.value[idx] = updated
+  try {
+    const updated = await api.updateColumnClassification(projectId, activeSnapshot.value.id, {
+      table_name: tableName,
+      column_name: columnName,
+      sensitivity_tag: tag,
+    })
+    const idx = snapshots.value.findIndex((s) => s.id === activeSnapshot.value?.id)
+    if (idx >= 0 && updated.tables) snapshots.value[idx] = { ...snapshots.value[idx], ...updated }
+    actionFeedback.value = `已更新敏感分级：${tableName}.${columnName} → ${tag}`
+  } catch (err) {
+    actionFeedback.value = err instanceof ApiClientError ? `${err.errorCode}: ${err.message}` : String(err)
+  }
 }
 
 async function handleFileUpload(event: Event): Promise<void> {
@@ -307,7 +325,7 @@ watch(
           v-for="conn in connections"
           :key="conn.id"
           :title="conn.name"
-          :subtitle="`${conn.connector_type.toUpperCase()} · ${conn.host_summary}`"
+          :subtitle="`${(conn.connector_type || 'unknown').toUpperCase()} · ${conn.host_summary || '-'}`"
         >
           <template #header>
             <Badge
@@ -361,7 +379,7 @@ watch(
             class="rounded border bg-background px-2 py-1 font-mono text-xs"
           >
             <option v-for="snap in snapshots" :key="snap.id" :value="snap.id">
-              {{ snap.captured_at }} ({{ snap.schema_fingerprint.slice(0, 12) }})
+              {{ snap.captured_at }} ({{ (snap.schema_fingerprint || '').slice(0, 12) }})
             </option>
           </select>
           <button
@@ -476,8 +494,8 @@ watch(
             </Badge>
           </div>
           <div class="mt-1.5 flex flex-wrap gap-2 text-muted-foreground">
-            <span>模式: {{ entry.modes.join(' / ') }}</span>
-            <span>方向: {{ entry.directions.join(' / ') }}</span>
+            <span>模式: {{ (entry.modes || []).join(' / ') }}</span>
+            <span>方向: {{ (entry.directions || []).join(' / ') }}</span>
           </div>
           <p v-if="entry.notes" class="mt-1 text-[11px] text-muted-foreground">{{ entry.notes }}</p>
         </div>

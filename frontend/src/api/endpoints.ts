@@ -64,10 +64,38 @@ export function createApiEndpoints(client: ApiClient) {
       client.get<ProjectOverviewResponse>(`/api/v1/projects/${projectId}/overview`),
 
     // 4. Connections & Connector Registry
-    getConnectorRegistry: () =>
-      client.get<{ items: ConnectorRegistryEntry[] }>('/api/v1/connectors/registry', {
-        skipTenantHeaders: true,
-      }),
+    getConnectorRegistry: async () => {
+      const raw = await client.get<{ items: Array<Record<string, unknown>> }>(
+        '/api/v1/connectors/registry',
+        { skipTenantHeaders: true },
+      )
+      // 将严格遵循 connector_registry.schema.json 的后端条目规范化为前端能力矩阵类型（兼容测试桩数据）
+      const normalized: ConnectorRegistryEntry[] = (raw.items || []).map((item) => {
+        const caps = (item.capabilities as Record<string, boolean> | undefined) || {}
+        const limits = (item.publish_rollback_limits as Record<string, unknown> | undefined) || {}
+        const derivedModes: Array<'BATCH' | 'CDC'> = []
+        if (caps.full_load || caps.incremental || !('full_load' in caps)) derivedModes.push('BATCH')
+        if (caps.cdc) derivedModes.push('CDC')
+        return {
+          connector_type: String(item.connector_type || item.connector_id || 'unknown'),
+          display_name: String(item.display_name || item.connector_name || item.connector_id || 'Unknown Connector'),
+          modes: Array.isArray(item.modes) ? (item.modes as Array<'BATCH' | 'CDC'>) : derivedModes,
+          directions: Array.isArray(item.directions)
+            ? (item.directions as Array<'SOURCE' | 'SINK'>)
+            : ((item.roles as Array<'SOURCE' | 'SINK'> | undefined) || ['SOURCE', 'SINK']),
+          verification_status: (item.verification_status ||
+            item.support_status ||
+            'PLANNED') as ConnectorRegistryEntry['verification_status'],
+          supported_versions: Array.isArray(item.supported_versions)
+            ? (item.supported_versions as string[])
+            : item.connector_version
+              ? [String(item.connector_version)]
+              : ['2.3.9'],
+          notes: (item.notes as string | undefined) || (limits.notes as string | undefined),
+        }
+      })
+      return { items: normalized }
+    },
     listConnections: (projectId: string) =>
       client.get<{ items: ConnectionItem[] }>(`/api/v1/projects/${projectId}/connections`),
     createConnection: (projectId: string, body: CreateConnectionRequest) =>

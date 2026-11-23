@@ -202,7 +202,7 @@ watch(
               <h4 class="mb-1.5 font-semibold">最近 Evidence 事件 ({{ evidenceEvents.length }})</h4>
               <div class="max-h-40 space-y-1 overflow-y-auto font-mono text-[11px]">
                 <div v-for="ev in evidenceEvents" :key="ev.id" class="border-b py-1">
-                  #{{ ev.seq }} [{{ ev.event_type }}] {{ ev.sha256_hash.slice(0, 14) }}…
+                  #{{ ev.seq }} [{{ ev.event_type }}] {{ (ev.sha256_hash || '').slice(0, 14) }}…
                 </div>
               </div>
             </div>
@@ -211,7 +211,7 @@ watch(
               <div class="max-h-40 space-y-1 overflow-y-auto font-mono text-[11px]">
                 <div v-for="cp in checkpoints" :key="cp.id" class="border-b py-1">
                   seq {{ cp.from_seq }}..{{ cp.to_seq }} · key={{ cp.key_id }} · sig={{
-                    cp.ed25519_signature.slice(0, 16)
+                    (cp.ed25519_signature || '').slice(0, 16)
                   }}…
                 </div>
               </div>

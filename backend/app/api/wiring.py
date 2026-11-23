@@ -1022,6 +1022,9 @@ def _resolve_agent_bindings_and_hints(
 ) -> dict[str, Any]:
     """从请求载荷或当前项目已登记的数据源连接与元数据快照构建 LangGraph 请求结构。"""
     hints: dict[str, Any] = dict(payload.get("hints") or {})
+    if "execution_mode" in payload and "sync_mode" not in hints:
+        em = str(payload["execution_mode"]).upper()
+        hints["sync_mode"] = "CDC" if em == "CDC" else "FULL_LOAD"
     for key in (
         "source_table",
         "sink_table",
@@ -1180,6 +1183,113 @@ def wire_application(app: FastAPI, settings: Settings | None = None) -> WiringCo
     app.state.benchmark_engine = container.benchmark_engine
 
     # -------------------- 6. Agent Thread 处理器 --------------------
+    def _build_frontend_agent_fields(
+        ctx: ProjectRequestContext,
+        *,
+        interrupt_payload: dict[str, Any] | None = None,
+        candidate: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """补充前端 Pipeline Studio 所需的脱敏标记、澄清问题列表与候选制品视图（保留全部原有字段）。"""
+        redaction_status = {
+            "redacted": True,
+            "policy_version": "v1.0.0",
+            "external_provider": container.runtime_backends.get("llm_provider", "DeterministicMock"),
+        }
+        interrupt_questions: list[dict[str, Any]] = []
+        if isinstance(interrupt_payload, dict):
+            missing = interrupt_payload.get("missing_fields") or interrupt_payload.get("questions") or []
+            if isinstance(missing, list):
+                for item in missing:
+                    if isinstance(item, dict):
+                        interrupt_questions.append(
+                            {
+                                "field": str(item.get("field") or item.get("key") or "param"),
+                                "prompt": str(item.get("prompt") or item.get("question") or f"请补充 {item.get('field', '参数')}"),
+                                "required": bool(item.get("required", True)),
+                            }
+                        )
+                    else:
+                        interrupt_questions.append(
+                            {
+                                "field": str(item),
+                                "prompt": f"请补充必填参数：{item}",
+                                "required": True,
+                            }
+                        )
+
+        draft_artifacts: dict[str, Any] | None = None
+        if isinstance(candidate, dict):
+            plan = candidate.get("plan") or {}
+            src = plan.get("source") or {}
+            sink = plan.get("sink") or {}
+            transforms = plan.get("transformations") or []
+            sql_parts = [str(t.get("sql_text", "")) for t in transforms if isinstance(t, dict) and t.get("sql_text")]
+            sql_text = "\n;\n".join(sql_parts) or "-- SELECT * FROM source_table"
+            qc = candidate.get("quality_contract") or {}
+            sc = candidate.get("supervision_contract") or {}
+            limits = sc.get("resource_limits") or sc
+            reject_cfg = sc.get("reject_rate_guard") or {}
+            draft_artifacts = {
+                "etl_plan_dsl": plan,
+                "dag_nodes": [
+                    {
+                        "id": "node-source",
+                        "kind": "SOURCE",
+                        "label": f"Source: {src.get('table', src.get('connector_id', 'source'))}",
+                        "connector_type": str(src.get("connector_id", "mysql-jdbc")),
+                    },
+                    {
+                        "id": "node-transform",
+                        "kind": "TRANSFORM",
+                        "label": "SQL Transform (sqlglot AST)",
+                        "execution_location": "SEATUNNEL_SQL",
+                    },
+                    {
+                        "id": "node-sink",
+                        "kind": "SINK",
+                        "label": f"Sink: {sink.get('table', sink.get('connector_id', 'doris'))}",
+                        "connector_type": str(sink.get("connector_id", "doris")),
+                    },
+                ],
+                "dag_edges": [
+                    {"id": "edge-1", "source": "node-source", "target": "node-transform", "label": "Read"},
+                    {"id": "edge-2", "source": "node-transform", "target": "node-sink", "label": "Shadow Write"},
+                ],
+                "sql_transformation": sql_text,
+                "sql_execution_location_reason": "经 sqlglot SELECT-only AST 沙箱与执行位置策略判定",
+                "seatunnel_hocon": str(candidate.get("hocon") or ""),
+                "schema_mapping_diff": [
+                    {
+                        "source_column": str(m.get("source_column", m.get("source", ""))),
+                        "source_type": str(m.get("source_type", "VARCHAR")),
+                        "target_column": str(m.get("target_column", m.get("target", ""))),
+                        "target_type": str(m.get("target_type", "VARCHAR")),
+                        "sensitivity_before": str(m.get("sensitivity", "NONE")),
+                        "masking_after": str(m.get("masking_rule", "PASSTHROUGH")),
+                    }
+                    for m in (plan.get("column_mappings") or [])
+                    if isinstance(m, dict)
+                ],
+                "quality_contract": {
+                    "rules": list(qc.get("rules") or []),
+                    "restricted_sql_enabled": bool(qc.get("restricted_sql_enabled", False)),
+                },
+                "runtime_supervision_contract": {
+                    "max_read_rows": int(limits.get("max_read_rows", 1_000_000)),
+                    "max_write_bytes": int(limits.get("max_write_bytes", 1_073_741_824)),
+                    "max_duration_seconds": int(limits.get("max_duration_seconds", 3600)),
+                    "max_amplification_ratio": float(limits.get("max_amplification_ratio", 3.0)),
+                    "reject_rate_threshold_pct": float(reject_cfg.get("max_reject_rate", 0.2)) * 100,
+                },
+            }
+
+        return {
+            "project_id": str(ctx.project_id),
+            "llm_redaction_status": redaction_status,
+            "interrupt_questions": interrupt_questions,
+            "draft_artifacts": draft_artifacts,
+        }
+
     def _agent_create_thread_handler(
         *,
         session: Session,
@@ -1210,6 +1320,7 @@ def wire_application(app: FastAPI, settings: Settings | None = None) -> WiringCo
             "langgraph_thread_id": thread.langgraph_thread_id,
             "status": thread.status,
             "title": thread.title,
+            **_build_frontend_agent_fields(ctx),
         }
 
     def _agent_invoke_handler(
@@ -1226,7 +1337,10 @@ def wire_application(app: FastAPI, settings: Settings | None = None) -> WiringCo
             thread_id=str(thread.id),
         )
         container.agent_ownership_store.register(agent_ctx)
-        req_dict = _resolve_agent_bindings_and_hints(session, ctx, payload)
+        normalized_payload = dict(payload)
+        if "prompt" not in normalized_payload and "requirement" in normalized_payload:
+            normalized_payload["prompt"] = normalized_payload["requirement"]
+        req_dict = _resolve_agent_bindings_and_hints(session, ctx, normalized_payload)
 
         token = _active_session_var.set(session)
         try:
@@ -1246,6 +1360,7 @@ def wire_application(app: FastAPI, settings: Settings | None = None) -> WiringCo
                 "status": "INTERRUPTED",
                 "pending_clarification": result.interrupt,
                 "interrupt": result.interrupt,
+                **_build_frontend_agent_fields(ctx, interrupt_payload=result.interrupt),
             }
 
         if result.status == "CANDIDATE_READY" and result.candidate is not None:
@@ -1275,6 +1390,7 @@ def wire_application(app: FastAPI, settings: Settings | None = None) -> WiringCo
                 "status": "CANDIDATE_READY",
                 "pending_clarification": None,
                 "candidate": result.candidate,
+                **_build_frontend_agent_fields(ctx, candidate=result.candidate),
             }
 
         thread.status = result.status
@@ -1285,6 +1401,7 @@ def wire_application(app: FastAPI, settings: Settings | None = None) -> WiringCo
             "status": result.status,
             "error_code": result.error_code,
             "handback": result.handback,
+            **_build_frontend_agent_fields(ctx),
         }
 
     def _agent_resume_handler(
@@ -1324,6 +1441,7 @@ def wire_application(app: FastAPI, settings: Settings | None = None) -> WiringCo
                 "status": "INTERRUPTED",
                 "pending_clarification": result.interrupt,
                 "interrupt": result.interrupt,
+                **_build_frontend_agent_fields(ctx, interrupt_payload=result.interrupt),
             }
 
         if result.status == "CANDIDATE_READY" and result.candidate is not None:
@@ -1353,6 +1471,7 @@ def wire_application(app: FastAPI, settings: Settings | None = None) -> WiringCo
                 "status": "CANDIDATE_READY",
                 "pending_clarification": None,
                 "candidate": result.candidate,
+                **_build_frontend_agent_fields(ctx, candidate=result.candidate),
             }
 
         thread.status = result.status
@@ -1363,6 +1482,7 @@ def wire_application(app: FastAPI, settings: Settings | None = None) -> WiringCo
             "status": result.status,
             "error_code": result.error_code,
             "handback": result.handback,
+            **_build_frontend_agent_fields(ctx),
         }
 
     # -------------------- 7. Pipeline Gate 与不可变版本冻结处理器 --------------------
@@ -1374,19 +1494,25 @@ def wire_application(app: FastAPI, settings: Settings | None = None) -> WiringCo
     ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], str, PipelineMetadataSnapshot]:
         """从请求载荷、关联 AgentThread 或最新 PipelineDraft 提取四类候选契约与元数据快照。"""
         src_bundle = payload.get("candidate") if isinstance(payload.get("candidate"), dict) else payload
+        if isinstance(payload.get("draft"), dict):
+            src_bundle = {**payload["draft"], **src_bundle}
         thread_id_val = src_bundle.get("thread_id") or payload.get("thread_id")
         if thread_id_val and str(thread_id_val) in container.thread_candidates:
             cached = container.thread_candidates[str(thread_id_val)]
             src_bundle = {**cached, **src_bundle}
+        elif not src_bundle.get("plan") and not src_bundle.get("etl_plan") and container.thread_candidates:
+            # 兼容前端直接发送 draft 表单但未显式附带 thread_id 的场景，自动回退最近候选产物
+            latest_cached = list(container.thread_candidates.values())[-1]
+            src_bundle = {**latest_cached, **src_bundle}
 
-        plan_data = src_bundle.get("plan") or src_bundle.get("etl_plan")
+        plan_data = src_bundle.get("plan") or src_bundle.get("etl_plan") or src_bundle.get("etl_plan_dsl")
         quality_data = src_bundle.get("quality_contract") or src_bundle.get("quality")
         supervision_data = (
             src_bundle.get("supervision_contract")
             or src_bundle.get("supervision")
             or default_supervision().model_dump(mode="json")
         )
-        hocon_text = src_bundle.get("hocon") or src_bundle.get("hocon_text")
+        hocon_text = src_bundle.get("hocon") or src_bundle.get("hocon_text") or src_bundle.get("seatunnel_hocon")
 
         if not plan_data or not quality_data or not hocon_text:
             latest_draft = (
@@ -1463,6 +1589,17 @@ def wire_application(app: FastAPI, settings: Settings | None = None) -> WiringCo
             "failures": failures_list,
             "errors": failures_list,
             "warnings": [],
+            "repair_loop_count": 0,
+            "max_repair_loops": 3,
+            "checks": [
+                {
+                    "gate_name": gname,
+                    "passed": not any(gname.lower() in f["code"].lower() for f in failures_list),
+                    "errors": [f["message"] for f in failures_list if gname.lower() in f["code"].lower()],
+                    "warnings": [],
+                }
+                for gname in ("SCHEMA", "SQL_AST", "HOCON", "CONNECTOR_CAPABILITY", "POLICY")
+            ],
         }
 
         sql_texts = [
@@ -1669,7 +1806,9 @@ def wire_application(app: FastAPI, settings: Settings | None = None) -> WiringCo
             "pipeline_version_id": str(db_version.id),
             "pipeline_id": str(pipe.id),
             "revision": db_version.revision,
+            "version_number": db_version.revision,
             "artifact_hash": db_version.artifact_hash,
+            "sha256_digest": db_version.artifact_hash,
             "manifest_id": str(db_manifest.id),
             "status": db_version.status,
             "manifest": {
@@ -1680,6 +1819,8 @@ def wire_application(app: FastAPI, settings: Settings | None = None) -> WiringCo
                 "canonical_json": db_manifest.canonical_json,
                 "content": domain_pv.manifest.content,
             },
+            "frozen_at": db_version.created_at.isoformat(),
+            "frozen_by": str(ctx.principal.user_id),
             "created_at": db_version.created_at.isoformat(),
         }
 
@@ -1691,10 +1832,14 @@ def wire_application(app: FastAPI, settings: Settings | None = None) -> WiringCo
         payload: dict[str, Any],
     ) -> dict[str, Any]:
         prep_type = str(payload.get("preparation_type", "EXECUTION")).upper()
-        pipeline_id = uuid.UUID(str(payload["pipeline_id"]))
         pipeline_version_id = uuid.UUID(str(payload["pipeline_version_id"]))
-
         db_ver = session.get(DbPipelineVersion, pipeline_version_id)
+        if payload.get("pipeline_id"):
+            pipeline_id = uuid.UUID(str(payload["pipeline_id"]))
+        elif db_ver is not None:
+            pipeline_id = db_ver.pipeline_id
+        else:
+            raise AppError(ErrorCode.DSL_SCHEMA_INVALID, "缺少 pipeline_id 且未找到对应 pipeline_version_id")
         raw_artifact_hash = (
             db_ver.artifact_hash
             if db_ver is not None
@@ -2020,7 +2165,7 @@ def wire_application(app: FastAPI, settings: Settings | None = None) -> WiringCo
         payload: dict[str, Any],
     ) -> dict[str, Any]:
         target_slot_role = str(
-            payload.get("slot_role") or payload.get("slot") or "DATA_CHECKER"
+            payload.get("slot_role") or payload.get("slot_type") or payload.get("slot") or "DATA_CHECKER"
         ).upper()
         decision_str = str(payload.get("decision", "APPROVE")).upper()
         reason_str = str(payload.get("reason", "Approved after review"))
@@ -2577,9 +2722,12 @@ def wire_application(app: FastAPI, settings: Settings | None = None) -> WiringCo
         return {
             "chain_valid": True,
             "signatures_valid": True,
+            "checkpoint_signatures_valid": True,
             "verified_events": verified_count,
+            "verified_events_count": verified_count,
             "checkpoints_verified": len(cps_for_verify),
             "head_event_hash": head_hash,
+            "message": f"SHA256 证据链与 Ed25519 检查点验签通过（共核验 {verified_count} 条事件，{len(cps_for_verify)} 个检查点）",
         }
 
     # -------------------- 11. Execution Reconcile 处理器 --------------------
@@ -2693,7 +2841,7 @@ def wire_application(app: FastAPI, settings: Settings | None = None) -> WiringCo
         scenario = str(payload.get("scenario", "logs_anomaly"))
         if scenario not in ("orders_users", "logs_anomaly"):
             scenario = "logs_anomaly"
-        tier = str(payload.get("row_tier", "10K")).upper()
+        tier = str(payload.get("row_tier") or payload.get("scale") or "10K").upper()
         seed = int(payload.get("seed", 42))
         error_rate = float(payload.get("error_rate", 0.25))
         formats = tuple(payload.get("formats", ["csv", "jsonl"]))
@@ -2752,7 +2900,7 @@ def wire_application(app: FastAPI, settings: Settings | None = None) -> WiringCo
         payload: dict[str, Any],
     ) -> dict[str, Any]:
         """调用真实 `BenchmarkEngine` 与 `score_benchmark` 运行 L0/L1 评测并强制执行 P0/P1 独立硬门槛。"""
-        layer = str(payload.get("layer", "L0")).upper()
+        layer = str(payload.get("layer") or payload.get("level") or "L0").upper()
         is_mock_llm = bool(payload.get("is_mock_llm", True))
         provider_mode = "mock" if is_mock_llm else "real"
 

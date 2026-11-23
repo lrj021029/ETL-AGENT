@@ -30,6 +30,7 @@ from app.shared.models.connections_metadata import (
     MetadataStatistic,
     SchemaDriftEvent,
     SchemaFingerprint,
+    SecretReference,
     SensitiveClassification,
 )
 
@@ -296,22 +297,30 @@ class SqlAlchemyReadOnlyMetadataProber(MetadataProberProtocol):
             return list(cfg["inline_schema_objects"])
 
         db_url = self._build_database_url(connection, secret_payload or {})
+        conn_hint = f"{connection.connection_type} {connection.connector_id}".upper()
+        use_backticks = ("MYSQL" in conn_hint) or ("DORIS" in conn_hint)
         engine = create_engine(db_url, pool_pre_ping=True, future=True)
         discovered_objects: list[dict[str, Any]] = []
         try:
             with engine.connect() as conn:
                 inspector = inspect(conn)
-                schema_name = cfg.get("schema") or inspector.default_schema_name or "public"
-                for table_name in inspector.get_table_names(schema=schema_name if schema_name != "main" else None):
-                    raw_cols = inspector.get_columns(
-                        table_name, schema=schema_name if schema_name != "main" else None
-                    )
-                    pk_constraint = inspector.get_pk_constraint(
-                        table_name, schema=schema_name if schema_name != "main" else None
-                    )
-                    indexes = inspector.get_indexes(
-                        table_name, schema=schema_name if schema_name != "main" else None
-                    )
+                schema_name = (
+                    cfg.get("schema")
+                    or (cfg.get("database") if use_backticks else None)
+                    or inspector.default_schema_name
+                    or "public"
+                )
+                inspect_schema = None if schema_name == "main" else schema_name
+                for table_name in inspector.get_table_names(schema=inspect_schema):
+                    raw_cols = inspector.get_columns(table_name, schema=inspect_schema)
+                    try:
+                        pk_constraint = inspector.get_pk_constraint(table_name, schema=inspect_schema)
+                    except Exception:
+                        pk_constraint = {}
+                    try:
+                        indexes = inspector.get_indexes(table_name, schema=inspect_schema)
+                    except Exception:
+                        indexes = []
 
                     columns_spec = [
                         {
@@ -328,18 +337,24 @@ class SqlAlchemyReadOnlyMetadataProber(MetadataProberProtocol):
                     sample_rows: list[dict[str, Any]] = []
                     row_count_approx = 0
                     try:
-                        qualified = (
-                            f'"{table_name}"'
-                            if schema_name in ("main", "public")
-                            else f'"{schema_name}"."{table_name}"'
-                        )
+                        if use_backticks:
+                            qualified = f"`{schema_name}`.`{table_name}`"
+                        else:
+                            qualified = (
+                                f'"{table_name}"'
+                                if schema_name in ("main", "public")
+                                else f'"{schema_name}"."{table_name}"'
+                            )
                         count_res = conn.execute(text(f"SELECT COUNT(*) FROM {qualified}")).scalar()
                         row_count_approx = int(count_res or 0)
                         rows = conn.execute(
                             text(f"SELECT * FROM {qualified} LIMIT :lim"),
                             {"lim": int(sample_max_rows)},
                         ).mappings().all()
-                        sample_rows = [dict(r) for r in rows]
+                        sample_rows = [
+                            {k: (str(v) if not isinstance(v, (int, float, bool, str, type(None))) else v) for k, v in dict(r).items()}
+                            for r in rows
+                        ]
                     except Exception:
                         pass
 
@@ -377,20 +392,28 @@ class SqlAlchemyReadOnlyMetadataProber(MetadataProberProtocol):
         if "sqlalchemy_url" in cfg:
             return str(cfg["sqlalchemy_url"])
 
-        host = cfg.get("host", "127.0.0.1")
+        host = str(cfg.get("host", "127.0.0.1"))
         port = cfg.get("port", 3306)
+        # 宿主机本地运行时将 Docker Compose 内部服务名映射回 127.0.0.1
+        if host in ("demo-mysql", "doris-fe", "demo-postgres", "postgres"):
+            import socket
+
+            try:
+                socket.gethostbyname(host)
+            except OSError:
+                host = "127.0.0.1"
         database = cfg.get("database", "etl_demo")
         username = secret_payload.get("username") or cfg.get("username", "readonly")
         password = secret_payload.get("password", "")
 
-        conn_type = connection.connection_type.upper()
-        if conn_type in ("MYSQL", "DORIS"):
+        conn_hint = f"{connection.connection_type} {connection.connector_id}".upper()
+        if ("MYSQL" in conn_hint) or ("DORIS" in conn_hint):
             return f"mysql+pymysql://{username}:{password}@{host}:{port}/{database}"
-        if conn_type in ("POSTGRES", "POSTGRESQL"):
+        if "POSTGRES" in conn_hint:
             return f"postgresql+psycopg://{username}:{password}@{host}:{port}/{database}"
         raise AppError(
             ErrorCode.METADATA_PROBE_FAILED,
-            f"不支持直接 SQL 元数据探查的连接类型：{connection.connection_type}",
+            f"不支持直接 SQL 元数据探查的连接类型：{connection.connection_type} ({connection.connector_id})",
         )
 
 
@@ -465,11 +488,13 @@ class MetadataService:
             else []
         )
 
+        secret_payload = self._resolve_connection_secret_payload(session, conn)
         discovered = (
             override_objects
             if override_objects is not None
             else self.prober.probe_connection(
                 conn,
+                secret_payload=secret_payload,
                 sample_max_rows=self.settings.metadata_sample_max_rows,
             )
         )
@@ -622,7 +647,9 @@ class MetadataService:
             }
 
         session.flush()
+        frontend_tables = self._build_frontend_tables(session, snapshot.id)
         return {
+            "id": str(snapshot.id),
             "snapshot_id": str(snapshot.id),
             "organization_id": str(organization_id),
             "project_id": str(project_id),
@@ -633,6 +660,7 @@ class MetadataService:
             "classification_rule_version": snapshot.classification_rule_version,
             "captured_at": snapshot.captured_at.isoformat(),
             "objects": serialized_objects,
+            "tables": frontend_tables,
             "drift_event": drift_summary,
         }
 
@@ -644,7 +672,7 @@ class MetadataService:
         project_id: uuid.UUID,
         connection_id: uuid.UUID,
     ) -> list[dict[str, Any]]:
-        """按采集时间倒序列出指定连接的所有不可变 MetadataSnapshot。"""
+        """按采集时间倒序列出指定连接的所有不可变 MetadataSnapshot（附带表列与脱敏样本供前端展示）。"""
         rows = (
             session.execute(
                 select(MetadataSnapshot)
@@ -660,6 +688,7 @@ class MetadataService:
         )
         return [
             {
+                "id": str(s.id),
                 "snapshot_id": str(s.id),
                 "connection_id": str(s.connection_id),
                 "connection_version": s.connection_version,
@@ -669,6 +698,7 @@ class MetadataService:
                 "stats_source": s.stats_source,
                 "captured_at": s.captured_at.isoformat(),
                 "captured_by": str(s.captured_by),
+                "tables": self._build_frontend_tables(session, s.id),
             }
             for s in rows
         ]
@@ -681,7 +711,7 @@ class MetadataService:
         project_id: uuid.UUID,
         connection_id: uuid.UUID,
     ) -> list[dict[str, Any]]:
-        """列出指定连接的 Schema Drift 历史记录。"""
+        """列出指定连接的 Schema Drift 历史记录（同时输出结构化 diff_json 与前端扁平 diffs 列表）。"""
         rows = (
             session.execute(
                 select(SchemaDriftEvent)
@@ -703,6 +733,7 @@ class MetadataService:
                 "to_snapshot_id": str(d.to_snapshot_id),
                 "severity": d.severity,
                 "diff_json": d.diff_json,
+                "diffs": self._flatten_drift_diffs(d.diff_json or {}),
                 "detected_at": d.detected_at.isoformat(),
             }
             for d in rows
@@ -715,27 +746,56 @@ class MetadataService:
         organization_id: uuid.UUID,
         project_id: uuid.UUID,
         snapshot_id: uuid.UUID,
-        object_id: uuid.UUID,
+        object_id: uuid.UUID | None,
         column_name: str,
         classification_level: str,
         pii_category: str | None,
         actor_user_id: uuid.UUID,
+        table_name: str | None = None,
     ) -> dict[str, Any]:
         """人工标注或覆盖快照内指定字段的敏感分级（source_mode 置为 MANUAL_MARK）。"""
+        tag_alias_map = {
+            "NONE": "PUBLIC",
+            "PII": "RESTRICTED_PII",
+            "PCI": "RESTRICTED_PII",
+            "RESTRICTED": "RESTRICTED_PII",
+            "CONFIDENTIAL": "CONFIDENTIAL",
+            "PUBLIC": "PUBLIC",
+            "INTERNAL": "INTERNAL",
+            "RESTRICTED_PII": "RESTRICTED_PII",
+        }
         valid_levels = {"PUBLIC", "INTERNAL", "CONFIDENTIAL", "RESTRICTED_PII"}
-        clean_level = classification_level.strip().upper()
+        raw_upper = classification_level.strip().upper()
+        clean_level = tag_alias_map.get(raw_upper, raw_upper)
         if clean_level not in valid_levels:
             raise AppError(
                 ErrorCode.DSL_SCHEMA_INVALID,
                 f"无效的敏感分级 '{clean_level}'，允许值为 {sorted(valid_levels)}",
             )
 
+        resolved_object_id = object_id
+        if resolved_object_id is None and table_name:
+            obj_row = session.execute(
+                select(MetadataObject).where(
+                    MetadataObject.organization_id == organization_id,
+                    MetadataObject.project_id == project_id,
+                    MetadataObject.snapshot_id == snapshot_id,
+                    MetadataObject.object_name == table_name,
+                )
+            ).scalar_one_or_none()
+            if obj_row is None:
+                raise AppError(ErrorCode.TENANT_ACCESS_DENIED, f"快照内未找到表 '{table_name}'")
+            resolved_object_id = obj_row.id
+
+        if resolved_object_id is None:
+            raise AppError(ErrorCode.DSL_SCHEMA_INVALID, "必须提供 object_id 或 table_name")
+
         existing = session.execute(
             select(SensitiveClassification).where(
                 SensitiveClassification.organization_id == organization_id,
                 SensitiveClassification.project_id == project_id,
                 SensitiveClassification.snapshot_id == snapshot_id,
-                SensitiveClassification.object_id == object_id,
+                SensitiveClassification.object_id == resolved_object_id,
                 SensitiveClassification.column_name == column_name,
             )
         ).scalar_one_or_none()
@@ -753,7 +813,7 @@ class MetadataService:
                 organization_id=organization_id,
                 project_id=project_id,
                 snapshot_id=snapshot_id,
-                object_id=object_id,
+                object_id=resolved_object_id,
                 column_name=column_name,
                 classification_level=clean_level,
                 pii_category=pii_category,
@@ -764,9 +824,14 @@ class MetadataService:
             session.add(record)
 
         session.flush()
+        snap = session.get(MetadataSnapshot, snapshot_id)
         return {
-            "id": str(record.id),
+            "id": str(snapshot_id) if table_name else str(record.id),
+            "classification_id": str(record.id),
             "snapshot_id": str(record.snapshot_id),
+            "connection_id": str(snap.connection_id) if snap else "",
+            "schema_fingerprint": snap.schema_fingerprint if snap else "",
+            "captured_at": snap.captured_at.isoformat() if snap else now.isoformat(),
             "object_id": str(record.object_id),
             "column_name": record.column_name,
             "classification_level": record.classification_level,
@@ -774,7 +839,156 @@ class MetadataService:
             "source_mode": record.source_mode,
             "marked_by": str(record.marked_by),
             "marked_at": record.marked_at.isoformat(),
+            "tables": self._build_frontend_tables(session, snapshot_id),
         }
+
+    def _resolve_connection_secret_payload(
+        self, session: Session, conn: DataConnection
+    ) -> dict[str, Any] | None:
+        """在最短执行生命周期内按需从持久化 Vault KV v2 读取连接凭据（绝不落盘或打印明文）。"""
+        if not conn.secret_ref_id:
+            return None
+        ref = session.get(SecretReference, conn.secret_ref_id)
+        if ref is None or ref.status != "ACTIVE":
+            return None
+        if ref.provider_type == "VAULT_KV2" and self.settings.vault_token:
+            import urllib.request as _req
+
+            clean_path = ref.secret_path.lstrip("/")
+            if not clean_path.startswith("v1/"):
+                clean_path = f"v1/{clean_path}"
+            url = f"{self.settings.vault_addr.rstrip('/')}/{clean_path}"
+            req = _req.Request(
+                url,
+                headers={"X-Vault-Token": self.settings.vault_token},
+                method="GET",
+            )
+            try:
+                with _req.urlopen(req, timeout=5) as resp:  # noqa: S310
+                    parsed = json.loads(resp.read().decode("utf-8"))
+                    data = dict(parsed.get("data", {}).get("data", {}))
+                    return data or None
+            except Exception:
+                return None
+        return None
+
+    @staticmethod
+    def _build_frontend_tables(session: Session, snapshot_id: uuid.UUID) -> list[dict[str, Any]]:
+        """组装前端 MetadataSnapshot 视图所需的表、列、敏感标记及脱敏样本列表。"""
+        level_to_tag = {
+            "PUBLIC": "NONE",
+            "INTERNAL": "NONE",
+            "CONFIDENTIAL": "CONFIDENTIAL",
+            "RESTRICTED_PII": "PII",
+        }
+        objs = (
+            session.execute(select(MetadataObject).where(MetadataObject.snapshot_id == snapshot_id))
+            .scalars()
+            .all()
+        )
+        tables: list[dict[str, Any]] = []
+        for obj in objs:
+            cols = (
+                session.execute(
+                    select(MetadataColumn)
+                    .where(MetadataColumn.object_id == obj.id)
+                    .order_by(MetadataColumn.ordinal_position.asc())
+                )
+                .scalars()
+                .all()
+            )
+            sens_rows = (
+                session.execute(
+                    select(SensitiveClassification).where(
+                        SensitiveClassification.snapshot_id == snapshot_id,
+                        SensitiveClassification.object_id == obj.id,
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            sens_map = {s.column_name: s.classification_level for s in sens_rows}
+            stat = session.execute(
+                select(MetadataStatistic).where(
+                    MetadataStatistic.snapshot_id == snapshot_id,
+                    MetadataStatistic.object_id == obj.id,
+                )
+            ).scalar_one_or_none()
+            sample_rows = list(stat.masked_sample_json or []) if stat else []
+            pk_set = {str(k) for k in (obj.primary_key_json or [])}
+
+            tables.append(
+                {
+                    "object_id": str(obj.id),
+                    "schema_name": obj.schema_name,
+                    "table_name": obj.object_name,
+                    "approx_rows": obj.row_count_approx,
+                    "columns": [
+                        {
+                            "name": c.column_name,
+                            "data_type": c.data_type,
+                            "nullable": c.nullable,
+                            "is_primary_key": c.column_name in pk_set,
+                            "sensitivity_tag": level_to_tag.get(
+                                sens_map.get(c.column_name, "PUBLIC"), "NONE"
+                            ),
+                            "masked_samples": [
+                                str(row[c.column_name])
+                                for row in sample_rows[:3]
+                                if isinstance(row, dict) and c.column_name in row
+                            ],
+                        }
+                        for c in cols
+                    ],
+                }
+            )
+        return tables
+
+    @staticmethod
+    def _flatten_drift_diffs(diff_json: dict[str, Any]) -> list[dict[str, Any]]:
+        """将结构化 diff_json 扁平化为前端可直接渲染的 diffs 条目列表。"""
+        items: list[dict[str, Any]] = []
+        for col in diff_json.get("added_columns", []):
+            items.append(
+                {
+                    "table": col.get("table", ""),
+                    "column": col.get("column_name", ""),
+                    "change_type": "ADDED",
+                    "before": None,
+                    "after": col.get("data_type"),
+                }
+            )
+        for col in diff_json.get("removed_columns", []):
+            items.append(
+                {
+                    "table": col.get("table", ""),
+                    "column": col.get("column_name", ""),
+                    "change_type": "REMOVED",
+                    "before": col.get("data_type"),
+                    "after": None,
+                }
+            )
+        for col in diff_json.get("type_changes", []):
+            items.append(
+                {
+                    "table": col.get("table", ""),
+                    "column": col.get("column_name", ""),
+                    "change_type": "TYPE_CHANGED",
+                    "before": col.get("from_type"),
+                    "after": col.get("to_type"),
+                }
+            )
+        for col in diff_json.get("nullability_changes", []):
+            items.append(
+                {
+                    "table": col.get("table", ""),
+                    "column": col.get("column_name", ""),
+                    "change_type": "NULLABILITY_CHANGED",
+                    "before": str(col.get("from_nullable")),
+                    "after": str(col.get("to_nullable")),
+                }
+            )
+        return items
 
     @staticmethod
     def _load_snapshot_objects_spec(session: Session, snapshot_id: uuid.UUID) -> list[dict[str, Any]]:
