@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import contextvars
 import hashlib
+import os
 import sys
 import tempfile
 import time
@@ -38,6 +39,7 @@ from app.agent import (  # noqa: E402
     AgentDeps,
     AgentService,
     DeterministicMockProvider,
+    OpenAICompatibleProvider,
     ProviderGateway,
     TenantAccessDenied,
     ThreadOwnershipStore,
@@ -54,7 +56,9 @@ from app.capabilities import (  # noqa: E402
     InMemoryFastPath,
     KeyRing,
     LocalEd25519Signer,
+    RedisFastPath,
     ReplayGuard,
+    VaultTransitEd25519Signer,
 )
 from app.compiler.gate import DeterministicGate  # noqa: E402
 from app.compiler.strategy import ExecutionStrategyCompiler  # noqa: E402
@@ -202,6 +206,115 @@ class _ContextBoundPermissionChecker:
             return True
         except Exception:
             return False
+
+
+class _HttpVaultTransitClient:
+    """基于标准库 HTTP 的真实 HashiCorp Vault Transit / KV v2 客户端（私钥永不离开 Vault）。"""
+
+    def __init__(self, vault_addr: str, token: str, kv_mount: str = "secret", transit_mount: str = "transit") -> None:
+        self._addr = vault_addr.rstrip("/")
+        self._token = token
+        self._kv_mount = kv_mount.strip("/")
+        self._transit_mount = transit_mount.strip("/")
+
+    def _request_json(self, method: str, path: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
+        import json as _json
+        import urllib.request as _req
+
+        url = f"{self._addr}{path}"
+        data = _json.dumps(payload).encode("utf-8") if payload is not None else None
+        req = _req.Request(
+            url,
+            data=data,
+            headers={"X-Vault-Token": self._token, "Content-Type": "application/json"},
+            method=method,
+        )
+        with _req.urlopen(req, timeout=5) as resp:  # noqa: S310
+            return _json.loads(resp.read().decode("utf-8"))
+
+    def read_kv2_secret(self, secret_ref: str) -> dict[str, Any]:
+        """按 KV v2 引用路径（如 secret/data/llm/openai_api_key）读取机密字典。"""
+        clean = secret_ref.lstrip("/")
+        if not clean.startswith("v1/"):
+            clean = f"v1/{clean}"
+        res = self._request_json("GET", f"/{clean}")
+        return dict(res.get("data", {}).get("data", {}))
+
+    def get_ed25519_public_key(self, key_name: str, key_version: int = 1) -> Any:
+        """从 Vault Transit 读取指定版本的 Ed25519 公钥并解析为 cryptography 公钥对象。"""
+        import base64 as _b64
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+
+        res = self._request_json("GET", f"/v1/{self._transit_mount}/keys/{key_name}")
+        keys = res.get("data", {}).get("keys", {})
+        pub_b64 = keys[str(key_version)]["public_key"]
+        return Ed25519PublicKey.from_public_bytes(_b64.b64decode(pub_b64))
+
+    def sign(self, key_name: str, input_b64: str, key_version: int | None = None) -> str:
+        """调用 Vault Transit 对 Base64 输入执行 Ed25519 签名并返回 vault:vN:... 字符串。"""
+        body: dict[str, Any] = {"input": input_b64}
+        if key_version is not None:
+            body["key_version"] = key_version
+        res = self._request_json("POST", f"/v1/{self._transit_mount}/sign/{key_name}", body)
+        return str(res["data"]["signature"])
+
+
+class _HttpZetaTransport:
+    """面向真实 Apache SeaTunnel Zeta 2.3.9 REST API 的传输层实现。"""
+
+    def __init__(self, rest_url: str, timeout: float = 15.0) -> None:
+        self._base = rest_url.rstrip("/")
+        self._timeout = timeout
+
+    def _req(self, method: str, path: str, body: bytes | None = None, content_type: str = "application/json") -> Any:
+        import json as _json
+        import urllib.request as _req
+
+        req = _req.Request(
+            f"{self._base}{path}",
+            data=body,
+            headers={"Content-Type": content_type},
+            method=method,
+        )
+        with _req.urlopen(req, timeout=self._timeout) as resp:  # noqa: S310
+            raw = resp.read().decode("utf-8", errors="replace").strip()
+            return _json.loads(raw) if raw else {}
+
+    def post_submit_job(self, *, job_name: str, hocon_body: str) -> dict[str, Any]:
+        """通过 Zeta 2.3.9 REST API 提交作业（支持 HOCON / JSON 配置体）。"""
+        import urllib.parse as _parse
+
+        qs = _parse.urlencode({"jobName": job_name, "format": "hocon"})
+        return dict(self._req("POST", f"/hazelcast/rest/maps/submit-job?{qs}", hocon_body.encode("utf-8"), "text/plain; charset=utf-8"))
+
+    def get_job_info(self, external_job_id: str) -> dict[str, Any]:
+        """查询单个 Zeta 作业实时状态与指标。"""
+        return dict(self._req("GET", f"/hazelcast/rest/maps/job-info/{external_job_id}"))
+
+    def list_jobs(self) -> list[dict[str, Any]]:
+        """列出正在运行与已结束的 Zeta 作业用于 UNKNOWN 状态对账。"""
+        running = self._req("GET", "/hazelcast/rest/maps/running-jobs")
+        finished = self._req("GET", "/hazelcast/rest/maps/finished-jobs/FINISHED")
+        items: list[dict[str, Any]] = []
+        if isinstance(running, list):
+            items.extend(running)
+        if isinstance(finished, list):
+            items.extend(finished)
+        return items
+
+    def post_stop_job(
+        self,
+        external_job_id: str,
+        *,
+        is_stop_with_save_point: bool = False,
+    ) -> dict[str, Any]:
+        """向 Zeta 2.3.9 发送受管停止或带保存点停止请求。"""
+        import json as _json
+
+        payload = _json.dumps(
+            {"jobId": str(external_job_id), "isStopWithSavePoint": bool(is_stop_with_save_point)}
+        ).encode("utf-8")
+        return dict(self._req("POST", "/hazelcast/rest/maps/stop-job", payload))
 
 
 class _LocalMockZetaTransport:
@@ -540,7 +653,7 @@ class WiringContainer:
     hocon_connector_registry: HoconConnectorRegistry
     deterministic_gate: DeterministicGate
     strategy_compiler: ExecutionStrategyCompiler
-    llm_provider: DeterministicMockProvider
+    llm_provider: Any
     provider_gateway: ProviderGateway
     agent_permission_checker: _ContextBoundPermissionChecker
     agent_ownership_store: ThreadOwnershipStore
@@ -552,27 +665,32 @@ class WiringContainer:
     standing_schedule_service: StandingScheduleService
     approval_store: InMemoryApprovalStore
     approval_engine: ApprovalEngine
-    capability_signer: LocalEd25519Signer
-    evidence_signer: LocalEd25519Signer
+    capability_signer: Any
+    evidence_signer: Any
     keyring: KeyRing
     capability_issuer: CapabilityIssuer
     capability_verifier: CapabilityVerifier
-    replay_fast_path: InMemoryFastPath
+    replay_fast_path: Any
     replay_guard: ReplayGuard
     evidence_ledger: EvidenceLedger
     tool_broker: ToolBroker
     quality_engine: TwoStageQualityEngine
     supervision_engine: RuntimeSupervisionEngine
-    zeta_transport: _LocalMockZetaTransport
+    zeta_transport: Any
     seatunnel_adapter: SeaTunnelZetaAdapter
     run_reconciler: RunReconciler
     doris_publish_adapter: DorisPublishAdapter
     rollback_executor: RollbackExecutor
     benchmark_engine: BenchmarkEngine
     thread_candidates: dict[str, dict[str, Any]] = field(default_factory=dict)
+    runtime_backends: dict[str, str] = field(default_factory=dict)
 
 
-def build_wiring_container(settings: Settings | None = None) -> WiringContainer:
+def build_wiring_container(
+    settings: Settings | None = None,
+    *,
+    force_live: bool = False,
+) -> WiringContainer:
     """初始化并组装所有兄弟模块的核心服务实例。"""
     cfg = settings or get_settings()
     install_redaction()
@@ -585,7 +703,40 @@ def build_wiring_container(settings: Settings | None = None) -> WiringContainer:
     gate = DeterministicGate(hocon_conn_reg)
     strategy_compiler = ExecutionStrategyCompiler()
 
-    llm_provider = DeterministicMockProvider()
+    runtime_backends: dict[str, str] = {}
+    is_live_mode = force_live or (cfg.environment != "test" and not bool(os.getenv("PYTEST_CURRENT_TEST")))
+
+    # 1. 尝试连接真实持久化 Vault（KV v2 读取 LLM API Key + Transit Ed25519 硬件边界签名）
+    vault_client: _HttpVaultTransitClient | None = None
+    if is_live_mode and cfg.vault_token and "placeholder" not in cfg.vault_token:
+        try:
+            vc = _HttpVaultTransitClient(
+                vault_addr=cfg.vault_addr,
+                token=cfg.vault_token,
+                kv_mount=cfg.vault_kv_mount,
+                transit_mount=cfg.vault_transit_mount,
+            )
+            vc._request_json("GET", "/v1/sys/health")
+            vault_client = vc
+        except Exception:
+            vault_client = None
+
+    # 2. 按配置装配真实 OpenAI-Compatible Provider（从 Vault KV v2 取 Key）或确定性 Mock Provider
+    llm_provider: Any = DeterministicMockProvider()
+    runtime_backends["llm_provider"] = "deterministic_mock"
+    if is_live_mode and cfg.llm_provider_mode == "openai_compatible" and vault_client is not None:
+        try:
+            secret_data = vault_client.read_kv2_secret(cfg.llm_openai_api_key_secret_ref)
+            api_key = str(secret_data.get("api_key") or "")
+            if api_key:
+                llm_provider = OpenAICompatibleProvider(
+                    base_url=str(secret_data.get("base_url") or cfg.llm_openai_base_url),
+                    api_key=api_key,
+                    model=str(secret_data.get("model") or cfg.llm_openai_model),
+                )
+                runtime_backends["llm_provider"] = f"openai_compatible:{cfg.llm_openai_model}"
+        except Exception:
+            pass
     provider_gateway = ProviderGateway(llm_provider)
 
     def _inspect_snapshot_tool(
@@ -633,15 +784,45 @@ def build_wiring_container(settings: Settings | None = None) -> WiringContainer:
         preparations=prep_service,
     )
 
-    cap_signer = LocalEd25519Signer(kid="etl-agent-capability-v1")
-    ev_signer = LocalEd25519Signer(kid="etl-agent-evidence-v1")
     keyring = KeyRing()
-    cap_signer.register(keyring)
-    ev_signer.register(keyring)
+    cap_signer: Any
+    ev_signer: Any
+    if vault_client is not None:
+        try:
+            cap_pub = vault_client.get_ed25519_public_key(cfg.vault_capability_key_name, 1)
+            ev_pub = vault_client.get_ed25519_public_key(cfg.vault_evidence_key_name, 1)
+            cap_signer = VaultTransitEd25519Signer(vault_client, cfg.vault_capability_key_name, 1)
+            ev_signer = VaultTransitEd25519Signer(vault_client, cfg.vault_evidence_key_name, 1)
+            keyring.add(cap_signer.kid, cap_pub)
+            keyring.add(ev_signer.kid, ev_pub)
+            runtime_backends["signer"] = "vault_transit_ed25519"
+        except Exception:
+            cap_signer = LocalEd25519Signer(kid="etl-agent-capability-v1")
+            ev_signer = LocalEd25519Signer(kid="etl-agent-evidence-v1")
+            cap_signer.register(keyring)
+            ev_signer.register(keyring)
+            runtime_backends["signer"] = "local_ed25519_fallback"
+    else:
+        cap_signer = LocalEd25519Signer(kid="etl-agent-capability-v1")
+        ev_signer = LocalEd25519Signer(kid="etl-agent-evidence-v1")
+        cap_signer.register(keyring)
+        ev_signer.register(keyring)
+        runtime_backends["signer"] = "local_ed25519"
 
     cap_issuer = CapabilityIssuer(signer=cap_signer)
     cap_verifier = CapabilityVerifier(keyring=keyring)
-    fast_path = InMemoryFastPath()
+    fast_path: Any = InMemoryFastPath()
+    runtime_backends["replay_fast_path"] = "in_memory"
+    if is_live_mode:
+        try:
+            import redis as _redis
+
+            r_client = _redis.from_url(cfg.redis_url, socket_connect_timeout=2, socket_timeout=2)
+            if r_client.ping():
+                fast_path = RedisFastPath(r_client)
+                runtime_backends["replay_fast_path"] = "redis_live"
+        except Exception:
+            pass
     replay_guard = ReplayGuard(fast=fast_path, store=broker_store.consumptions)
     evidence_ledger = EvidenceLedger(
         store=broker_store.ledger,
@@ -649,8 +830,19 @@ def build_wiring_container(settings: Settings | None = None) -> WiringContainer:
         checkpoint_every=10,
     )
 
-    # 数据面适配器与运行时执行器
-    zeta_transport = _LocalMockZetaTransport()
+    # 数据面适配器与运行时执行器（真实 SeaTunnel Zeta 2.3.9 可达时自动挂载真实 HTTP 传输层）
+    zeta_transport: Any = _LocalMockZetaTransport()
+    runtime_backends["seatunnel_transport"] = "local_mock"
+    if is_live_mode:
+        try:
+            import urllib.request as _req
+
+            with _req.urlopen(f"{cfg.seatunnel_rest_url.rstrip('/')}/hazelcast/rest/maps/overview", timeout=2) as _r:
+                if _r.status == 200:
+                    zeta_transport = _HttpZetaTransport(cfg.seatunnel_rest_url)
+                    runtime_backends["seatunnel_transport"] = f"seatunnel_zeta_http:{cfg.seatunnel_rest_url}"
+        except Exception:
+            pass
     seatunnel_adapter = SeaTunnelZetaAdapter(transport=zeta_transport)
     run_reconciler = RunReconciler(adapter=seatunnel_adapter)
     doris_publish_adapter = DorisPublishAdapter()
@@ -748,6 +940,7 @@ def build_wiring_container(settings: Settings | None = None) -> WiringContainer:
         doris_publish_adapter=doris_publish_adapter,
         rollback_executor=rollback_executor,
         benchmark_engine=benchmark_engine,
+        runtime_backends=runtime_backends,
     )
 
 

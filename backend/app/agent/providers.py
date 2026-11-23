@@ -100,7 +100,13 @@ class OpenAICompatibleProvider:
         self.info = {"provider": "OpenAICompatibleProvider", "model": model, "is_mock_llm": False}
 
     def _urllib_transport(self, url: str, headers: dict[str, str], body: bytes) -> bytes:
-        req = urllib.request.Request(url, data=body, headers=headers, method="POST")
+        # 附加标准客户端 User-Agent 与 Accept 头，避免上游 API 网关拦截默认 Python-urllib 标识
+        req_headers = {
+            "Accept": "application/json",
+            "User-Agent": "etl-agent/1.0 (OpenAI-Compatible)",
+            **headers,
+        }
+        req = urllib.request.Request(url, data=body, headers=req_headers, method="POST")
         with urllib.request.urlopen(req, timeout=self._timeout) as r:  # noqa: S310
             return r.read()
 

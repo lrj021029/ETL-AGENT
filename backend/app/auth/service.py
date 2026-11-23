@@ -195,13 +195,18 @@ class AuthService:
             otp_code=otp_code,
         )
 
+        local_part, _, domain_part = user.email.partition("@")
+        masked_email = f"{local_part[:2]}***@{domain_part}" if domain_part else "***"
         return {
             "challenge_id": str(challenge.id),
             "session_id": str(user_session.id),
             "email": user.email,
+            "masked_email": masked_email,
+            "delivery_channel": "EMAIL_OTP",
             "verification_type": "EMAIL_OTP",
             "verification_label": "邮件二次验证",
             "expires_in_seconds": self.settings.otp_ttl_seconds,
+            "notice": "已向邮箱发送邮件二次验证验证码（本地请在 Mailpit http://127.0.0.1:8025 查看 6 位验证码；此方式仅作演示二次验证，不等同于抗钓鱼强 MFA）",
             "message": "已向邮箱发送邮件二次验证验证码（本地通过 Mailpit 捕获）",
         }
 
@@ -517,72 +522,140 @@ class AuthService:
         if user is None or user.status != "ACTIVE":
             raise AppError(ErrorCode.AUTH_INVALID_CREDENTIALS, "当前用户不存在或已被禁用")
 
-        org_memberships = (
-            session.execute(
-                select(OrganizationMember, Organization)
-                .join(Organization, Organization.id == OrganizationMember.organization_id)
-                .where(
-                    OrganizationMember.user_id == user.id,
-                    OrganizationMember.status == "ACTIVE",
+        bind = session.get_bind()
+        is_pg = bind is not None and bind.dialect.name == "postgresql"
+
+        if is_pg:
+            # 在 PostgreSQL FORCE RLS 下，通过受控 SECURITY DEFINER 函数仅查询当前已认证用户自身成员归属
+            from sqlalchemy import text
+
+            org_rows = session.execute(
+                text("SELECT organization_id, slug, name, org_role FROM resolve_user_organizations(:uid)"),
+                {"uid": str(user.id)},
+            ).all()
+            proj_rows = session.execute(
+                text("SELECT project_id, organization_id, slug, name, environment FROM resolve_user_projects(:uid)"),
+                {"uid": str(user.id)},
+            ).all()
+            role_rows = session.execute(
+                text("SELECT organization_id, project_id, role_code, role_name, is_system FROM resolve_user_role_bindings(:uid)"),
+                {"uid": str(user.id)},
+            ).all()
+
+            orgs = [
+                {
+                    "id": str(r[0]),
+                    "slug": r[1],
+                    "name": r[2],
+                    "org_role": r[3],
+                    "role": r[3],
+                }
+                for r in org_rows
+            ]
+            roles = [
+                {
+                    "organization_id": str(r[0]),
+                    "project_id": str(r[1]) if r[1] else None,
+                    "role_code": r[2],
+                    "role_name": r[3],
+                    "is_system": bool(r[4]),
+                }
+                for r in role_rows
+            ]
+            proj_role_map: dict[str, list[str]] = {}
+            for rb in roles:
+                if rb["project_id"]:
+                    proj_role_map.setdefault(rb["project_id"], []).append(rb["role_code"])
+
+            projects = [
+                {
+                    "id": str(r[0]),
+                    "organization_id": str(r[1]),
+                    "slug": r[2],
+                    "name": r[3],
+                    "environment": r[4],
+                    "roles": sorted(set(proj_role_map.get(str(r[0]), []))),
+                }
+                for r in proj_rows
+            ]
+        else:
+            org_memberships = (
+                session.execute(
+                    select(OrganizationMember, Organization)
+                    .join(Organization, Organization.id == OrganizationMember.organization_id)
+                    .where(
+                        OrganizationMember.user_id == user.id,
+                        OrganizationMember.status == "ACTIVE",
+                    )
                 )
+                .all()
             )
-            .all()
-        )
-        orgs = [
-            {
-                "id": str(org.id),
-                "slug": org.slug,
-                "name": org.name,
-                "org_role": om.org_role,
-            }
-            for om, org in org_memberships
-        ]
-        active_org_ids = {org.id for _, org in org_memberships}
+            orgs = [
+                {
+                    "id": str(org.id),
+                    "slug": org.slug,
+                    "name": org.name,
+                    "org_role": om.org_role,
+                    "role": om.org_role,
+                }
+                for om, org in org_memberships
+            ]
+            active_org_ids = {org.id for _, org in org_memberships}
 
-        proj_memberships = (
-            session.execute(
-                select(ProjectMember, Project)
-                .join(Project, Project.id == ProjectMember.project_id)
-                .where(
-                    ProjectMember.user_id == user.id,
-                    ProjectMember.status == "ACTIVE",
+            proj_memberships = (
+                session.execute(
+                    select(ProjectMember, Project)
+                    .join(Project, Project.id == ProjectMember.project_id)
+                    .where(
+                        ProjectMember.user_id == user.id,
+                        ProjectMember.status == "ACTIVE",
+                    )
                 )
+                .all()
             )
-            .all()
-        )
-        projects = [
-            {
-                "id": str(proj.id),
-                "organization_id": str(proj.organization_id),
-                "slug": proj.slug,
-                "name": proj.name,
-                "environment": proj.environment,
-            }
-            for pm, proj in proj_memberships
-            if proj.organization_id in active_org_ids
-        ]
-
-        role_bindings = (
-            session.execute(
-                select(MemberRoleBinding, Role)
-                .join(Role, Role.id == MemberRoleBinding.role_id)
-                .where(MemberRoleBinding.user_id == user.id)
+            role_bindings = (
+                session.execute(
+                    select(MemberRoleBinding, Role)
+                    .join(Role, Role.id == MemberRoleBinding.role_id)
+                    .where(MemberRoleBinding.user_id == user.id)
+                )
+                .all()
             )
-            .all()
-        )
-        roles = [
-            {
-                "organization_id": str(binding.organization_id),
-                "project_id": str(binding.project_id) if binding.project_id else None,
-                "role_code": role.code,
-                "role_name": role.name,
-                "is_system": role.is_system,
-            }
-            for binding, role in role_bindings
-            if binding.organization_id in active_org_ids
-        ]
+            roles = [
+                {
+                    "organization_id": str(binding.organization_id),
+                    "project_id": str(binding.project_id) if binding.project_id else None,
+                    "role_code": role.code,
+                    "role_name": role.name,
+                    "is_system": role.is_system,
+                }
+                for binding, role in role_bindings
+                if binding.organization_id in active_org_ids
+            ]
+            proj_role_map = {}
+            for rb in roles:
+                if rb["project_id"]:
+                    proj_role_map.setdefault(rb["project_id"], []).append(rb["role_code"])
 
+            projects = [
+                {
+                    "id": str(proj.id),
+                    "organization_id": str(proj.organization_id),
+                    "slug": proj.slug,
+                    "name": proj.name,
+                    "environment": proj.environment,
+                    "roles": sorted(set(proj_role_map.get(str(proj.id), []))),
+                }
+                for pm, proj in proj_memberships
+                if proj.organization_id in active_org_ids
+            ]
+
+        system_roles = sorted({rb["role_code"] for rb in roles if rb.get("is_system")})
         return {
+            "id": str(user.id),
+            "email": user.email,
+            "display_name": user.display_name,
+            "system_roles": system_roles,
             "user": {
                 "id": str(user.id),
                 "email": user.email,

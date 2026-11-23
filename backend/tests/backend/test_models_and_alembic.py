@@ -140,7 +140,8 @@ def test_alembic_migration_graph_and_rls_policy_sql() -> None:
 
     assert "0001_initial_schema" in rev_ids
     assert "0002_rls_policies" in rev_ids
-    assert script_dir.get_current_head() == "0002_rls_policies"
+    assert "0003_auth_membership_lookup" in rev_ids
+    assert script_dir.get_current_head() == "0003_auth_membership_lookup"
 
     # 导入 0002_rls_policies 验证 RLS SQL 生成器
     import importlib.util

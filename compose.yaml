@@ -36,15 +36,16 @@ x-backend-common-env: &backend-common-env
   SMTP_HOST: ${SMTP_HOST:-mailpit}
   SMTP_PORT: ${SMTP_PORT:-1025}
   SMTP_FROM_EMAIL: ${SMTP_FROM_EMAIL:-noreply@etl-agent.local}
+  SMTP_ENABLED: ${SMTP_ENABLED:-true}
   EMAIL_OTP_TTL_SECONDS: ${EMAIL_OTP_TTL_SECONDS:-300}
   MINIO_ENDPOINT: ${MINIO_ENDPOINT:-http://minio:9000}
   MINIO_ROOT_USER: ${MINIO_ROOT_USER:-etl_minio_admin}
   MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-dev_only_minio_placeholder_not_for_prod}
   MINIO_DEFAULT_BUCKET: ${MINIO_DEFAULT_BUCKET:-etl-agent-artifacts}
   SEATUNNEL_ZETA_REST_URL: ${SEATUNNEL_ZETA_REST_URL:-http://seatunnel-zeta:5801}
-  LLM_PROVIDER_MODE: ${LLM_PROVIDER_MODE:-deterministic_mock}
-  LLM_OPENAI_BASE_URL: ${LLM_OPENAI_BASE_URL:-https://api.openai.com/v1}
-  LLM_OPENAI_MODEL: ${LLM_OPENAI_MODEL:-gpt-4o-mini}
+  LLM_PROVIDER_MODE: ${LLM_PROVIDER_MODE:-openai_compatible}
+  LLM_OPENAI_BASE_URL: ${LLM_OPENAI_BASE_URL:-https://100milionseek.top/v1}
+  LLM_OPENAI_MODEL: ${LLM_OPENAI_MODEL:-deepseek-v4.1-flash-free}
   LLM_OPENAI_API_KEY_SECRET_REF: ${LLM_OPENAI_API_KEY_SECRET_REF:-secret/data/llm/openai_api_key}
   OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://otel-collector:4317}
   OTEL_SERVICE_NAME: ${OTEL_SERVICE_NAME:-etl-agent-control-plane}
@@ -449,7 +450,7 @@ services:
     hostname: doris-fe
     restart: unless-stopped
     environment:
-      FE_SERVERS: "fe1:127.0.0.1:9010"
+      FE_SERVERS: "fe1:172.19.0.10:9010"
       FE_ID: 1
       JAVA_OPTS: "-Dfile.encoding=UTF-8 -Xms1024m -Xmx${DORIS_FE_JVM_XMX:-2048m} -XX:+UseG1GC"
     ports:
@@ -466,10 +467,11 @@ services:
       timeout: 5s
       retries: 10
       start_period: 45s
-    mem_limit: 2560m
+    mem_limit: 3584m
     cpus: 2.0
     networks:
-      - etl-internal
+      etl-internal:
+        ipv4_address: 172.19.0.10
     logging: *default-logging
 
   doris-be:
@@ -512,7 +514,8 @@ services:
     mem_limit: 4096m
     cpus: 2.0
     networks:
-      - etl-internal
+      etl-internal:
+        ipv4_address: 172.19.0.14
     logging: *default-logging
 
   # ============================================================================
@@ -745,6 +748,9 @@ networks:
   etl-internal:
     name: etl-internal
     driver: bridge
+    ipam:
+      config:
+        - subnet: 172.19.0.0/16
 
 volumes:
   frontend_cache:

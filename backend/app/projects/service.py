@@ -243,11 +243,42 @@ class ProjectService:
             .all()
         )
 
+        evidence_items = [
+            {
+                "event_id": str(ev.id),
+                "sequence_no": ev.sequence_no,
+                "event_type": ev.event_type,
+                "actor": ev.actor,
+                "resource_ref": ev.resource_ref,
+                "artifact_hash": ev.artifact_hash,
+                "payload_digest": ev.payload_digest,
+                "previous_hash": ev.previous_hash,
+                "event_hash": ev.event_hash,
+                "timestamp": ev.timestamp.isoformat() if hasattr(ev.timestamp, "isoformat") else str(ev.timestamp),
+            }
+            for ev in recent_evidence
+        ]
+        pending_preparations = sum(1 for p in preps if p.status in ("DRAFT", "PREPARED"))
         return {
             "organization_id": str(organization_id),
             "project_id": str(project_id),
             "project_name": proj.name,
             "environment": proj.environment,
+            # 前端 OverviewView.vue 扁平字段
+            "connections_total": len(conn_rows),
+            "connections_healthy": healthy_conns,
+            "pipelines_total": int(pipelines_count),
+            "latest_versions_count": int(versions_count),
+            "pending_preparations": pending_preparations,
+            "pending_approvals": pending_approvals,
+            "pending_commits": ready_to_commit,
+            "active_batch_runs": batch_runs,
+            "active_cdc_runs": cdc_runs,
+            "success_rate": success_rate if runs else None,
+            "reject_rate": avg_reject_rate if quality_reports else None,
+            "budget_utilization_pct": 0.0 if runs else None,
+            "recent_audit_events": evidence_items,
+            # 后端兼容嵌套字段
             "connections": {
                 "total": len(conn_rows),
                 "healthy": healthy_conns,
@@ -268,15 +299,5 @@ class ProjectService:
                 "success_rate": success_rate,
                 "average_reject_rate": avg_reject_rate,
             },
-            "recent_evidence_events": [
-                {
-                    "sequence_no": ev.sequence_no,
-                    "event_type": ev.event_type,
-                    "actor": ev.actor,
-                    "resource_ref": ev.resource_ref,
-                    "event_hash": ev.event_hash,
-                    "timestamp": ev.timestamp,
-                }
-                for ev in recent_evidence
-            ],
+            "recent_evidence_events": evidence_items,
         }
